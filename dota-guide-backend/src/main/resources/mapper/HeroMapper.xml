@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  ============================================================
+  HeroMapper.xml —— 英雄相关的全部 SQL
+  ============================================================
+
+  为什么从注解搬到这里来？三个理由：
+
+  1. **注解里写不了 <collection>。** 详情接口是"一个英雄 + 他的多条技能"，
+     MyBatis 让数据库直接映射出这个嵌套结构的唯一办法就是 <collection>，
+     而它是 XML 专属标签，注解里没有对应写法。原来只能用
+     "注解查扁平行 → Service 手工组装"绕过去，那 40 行组装代码就是为了
+     补注解的表达力缺口而存在的。
+
+  2. **共享片段。** findByPage 和 countByFilter 的 5 个 WHERE 谓词必须一模一样
+     （不一致就会出现"列表 3 条、总数 100"），注解里只能复制两份、靠注释提醒
+     "改了一处记得改另一处"；XML 的 <sql> 片段把这份重复变成了不可能不同步。
+
+  3. **SQL 和 Java 分开。** 改 WHERE 条件、加一列、调 ORDER BY 都不用碰 .java 文件，
+     也不用在字符串拼接里小心翼翼地对空格和引号。
+
+  namespace 必须是 Mapper 接口的全限定名，每个 <select> 的 id 必须是接口上的方法名 ——
+  MyBatis 靠这两点把 SQL 和接口方法对上号。接口上一旦还留着同名的 @Select 注解，
+  启动时会报 "Mapped Statements collection already contains value"，所以注解已全部删除。
+
+  SQL 文件位置：MyBatis 默认就会扫描 classpath*:/mapper/**/*.xml，
+  application.yml 里不需要额外配置 mapper-locations。
+  ============================================================
+-->
+<mapper namespace="com.dota.guide.mapper.HeroMapper">
+
+    <!--
+      ============================================================
+      共享片段一：英雄表的 14 个列
+      ============================================================
+
+      ${alias} 是 MyBatis 的「属性替换」，值由使用方在 <include> 里用
+      <property name="alias" value="..."/> 传进来（列表查询传空串，详情查询传 "h."）。
+      这样列清单只写一遍：以后给 hero 表加一列，只改这一行。
+
+      注意 ${} 和 #{} 的区别：#{} 是预编译占位符（防注入，用于用户输入），
+      ${} 是直接字符串替换（有注入风险，只能用于代码里写死的值）。
+      这里的 alias 值来自 XML 本身、不经过用户，所以安全。
+
+      `role` 加反引号是因为它是 MySQL 8 的保留字。
+    -->
+    <sql id="heroColumns">${alias}id, ${alias}name, ${alias}slug, ${alias}alias, ${alias}`role`, ${alias}pos, ${alias}attr, ${alias}attack, ${alias}complexity, ${alias}avatar, ${alias}intro, ${alias}tips, ${alias}items, ${alias}counters</sql>
+
+    <!--
+      ============================================================
+      共享片段二：5 个筛选谓词
+      ============================================================
+
+      参数是一个 HeroQuery 对象（见 com.dota.guide.query.HeroQuery），
+      test 里的 keyword/role/pos/attr/complexity 就是它的字段名。
+
+      <if> 的 test 是 OGNL 表达式：参数为 null 或空字符串时整段跳过，
+      用户没选这个筛选条件就不拼这个 WHERE —— 这就是"动态 SQL"。
+
+      列表查询和计数查询都 <include> 这一段，所以两者永远一致。
+    -->
+    <sql id="filters">
+        <if test="keyword != null and keyword != ''">
+            AND (name LIKE CONCAT('%', #{keyword}, '%')
+            OR alias LIKE CONCAT('%', #{keyword}, '%')
+            OR intro LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        <if test="role != null and role != ''">
+            AND `role` LIKE CONCAT('%', #{role}, '%')
+        </if>
+        <if test="pos != null and pos != ''">
+            AND pos LIKE CONCAT('%', #{pos}, '%')
+        </if>
+        <if test="attr != null and attr != ''">
+            AND attr = #{attr}
+        </if>
+        <if test="complexity != null">
+            AND complexity = #{complexity}
+        </if>
+    </sql>
+
+    <!--
+      ============================================================
+      详情结果的映射规则：把 JOIN 出来的扁平行折叠成"英雄 + 技能列表"
+      ============================================================
+
+      SQL 查出来的样子（斧王为例，6 条技能 = 6 行，英雄信息重复 6 遍）：
+
+        id | name | ... | skill_id | skill_name
+        2  | 斧王 | ... | 1        | 狂战士之吼
+        2  | 斧王 | ... | 2        | 反击螺旋
+        2  | 斧王 | ... | 5        | 反击螺旋·魔晶强化
+        ...
+
+      <id> 告诉 MyBatis"哪些行属于同一个对象"：id 相同的行折叠成一个 HeroDetailVO，
+      每行的技能列则被塞进它的 skills 列表。折叠工作全在 MyBatis 内部完成，
+      Java 代码里不再需要任何 for 循环去拼装。
+
+      ⚠️ 为什么 14 个英雄字段要一个个写？
+      MyBatis 默认 autoMappingBehavior=PARTIAL，含义是「含嵌套映射的 resultMap
+      不做自动映射」。本 resultMap 里有一个 <collection>，属于嵌套映射，
+      所以不写 <result> 的列会**静默丢失**（接口返回 null，不报错）。
+      写全虽然啰嗦，但换来的是"列名改了编译期不管、运行期静默变 null"这类坑不会出现。
+
+      技能列写了 AS 别名（skill_id / skill_hero_id…）：hero 和 hero_skill 两表
+      都有 id 列，不取别名 MyBatis 分不清哪列属于谁。
+    -->
+    <resultMap id="heroDetailMap" type="com.dota.guide.entity.HeroDetailVO">
+        <!-- 英雄自身的 14 个字段（对应 hero 表） -->
+        <id property="id" column="id"/>
+        <result property="name" column="name"/>
+        <result property="slug" column="slug"/>
+        <result property="alias" column="alias"/>
+        <!-- column 写 role 不带反引号：反引号只是 SQL 里的定界符，结果集的列名是 role -->
+        <result property="role" column="role"/>
+        <result property="pos" column="pos"/>
+        <result property="attr" column="attr"/>
+        <result property="attack" column="attack"/>
+        <result property="complexity" column="complexity"/>
+        <result property="avatar" column="avatar"/>
+        <result property="intro" column="intro"/>
+        <result property="tips" column="tips"/>
+        <result property="items" column="items"/>
+        <result property="counters" column="counters"/>
+
+        <!-- 一对多的"多"方：每个英雄挂一个技能列表 -->
+        <collection property="skills" ofType="com.dota.guide.entity.HeroSkill">
+            <id property="id" column="skill_id"/>
+            <result property="heroId" column="skill_hero_id"/>
+            <result property="skillKey" column="skill_key"/>
+            <result property="skillType" column="skill_type"/>
+            <result property="skillSource" column="skill_source"/>
+            <result property="skillName" column="skill_name"/>
+            <result property="skillDesc" column="skill_desc"/>
+        </collection>
+    </resultMap>
+
+    <!--
+      ============================================================
+      1. 分页查询英雄列表
+      ============================================================
+
+      LIMIT #{size} OFFSET #{offset}：MySQL 分页语法，
+      第 2 页 24 条 = 跳过前 24 条取 24 条。
+
+      #{size} / #{offset} 走到 HeroQuery 的 getSize() / getOffset()，
+      而 HeroQuery 的 setter 已经保证了这两个值一定合法（page≥1、1≤size≤500），
+      所以这里不需要再写任何兜底判断。
+
+      ORDER BY 里的 CASE 是"命中权重"排序：名字命中排最前、俗称命中次之、简介命中最末。
+      搜"兽"时这样能让真正叫"獸"的英雄排第一，而不是简介里带"兽"字的英雄。
+      <choose>/<when>/<otherwise> 相当于 Java 的 if/else：
+      有关键词才用权重排序，否则按 id 排。
+    -->
+    <select id="findByPage" resultType="com.dota.guide.entity.Hero">
+        SELECT <include refid="heroColumns"><property name="alias" value=""/></include>
+        FROM hero
+        WHERE 1=1
+        <include refid="filters"/>
+        <choose>
+            <when test="keyword != null and keyword != ''">
+                ORDER BY CASE WHEN name LIKE CONCAT('%', #{keyword}, '%') THEN 0
+                WHEN alias LIKE CONCAT('%', #{keyword}, '%') THEN 1
+                ELSE 2 END, id
+            </when>
+            <otherwise>
+                ORDER BY id
+            </otherwise>
+        </choose>
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <!--
+      ============================================================
+      2. 统计满足相同筛选条件的总条数
+      ============================================================
+
+      分页必须知道总数才能算总页数。筛选条件直接复用上面的 <include refid="filters"/>，
+      所以"列表条数和总条数对不上"这类 bug 从结构上就不会出现。
+    -->
+    <select id="countByFilter" resultType="long">
+        SELECT COUNT(*)
+        FROM hero
+        WHERE 1=1
+        <include refid="filters"/>
+    </select>
+
+    <!--
+      ============================================================
+      3. 按 key 查英雄详情（key 可以是 id 也可以是 slug）
+      ============================================================
+
+      一个接口同时认两种标识：/api/heroes/3 和 /api/heroes/sven 都返回同一个英雄。
+      做法是 WHERE 上一个 OR，非数字的 key 传进来的 numericKey 为 null：
+
+        h.slug = 'sven'  OR  h.id = NULL
+
+      SQL 里任何值和 NULL 比较结果都是 NULL（不是 false），
+      OR 的另一边为真时整体为真，另一边为假时整体仍是 NULL —— 被 WHERE 过滤掉。
+      也就是说 id 这一支在传 null 时自动失效，不用再套一层 if 判断。
+
+      jdbcType=BIGINT 是给 null 值补一个类型说明：
+      部分 JDBC 驱动在参数为 null 且不指定类型时会报错，写上更保险。
+
+      ⚠️ ORDER BY 和改动前逐字一致 —— 它决定了详情页技能的显示顺序
+      （先按 Q→W→E→R→D→F 排有按键的技能，然后是无按键的"强化类"按 id 排，
+      即魔晶在前、神杖在后）。这是验收要求之一，不能顺手"优化"。
+      (s.skill_key = '') 是布尔比较，MySQL 返回 0/1，ASC 让 0（有按键）排前面。
+      FIELD() 返回第一个参数在后续列表中的位置序号。
+    -->
+    <select id="findByKey" resultMap="heroDetailMap">
+        SELECT <include refid="heroColumns"><property name="alias" value="h."/></include>,
+        s.id AS skill_id, s.hero_id AS skill_hero_id, s.skill_key, s.skill_type,
+        s.skill_source, s.skill_name, s.skill_desc
+        FROM hero h
+        LEFT JOIN hero_skill s ON h.id = s.hero_id
+        WHERE h.slug = #{key}
+        OR h.id = #{numericKey,jdbcType=BIGINT}
+        ORDER BY (s.skill_key = '') ASC, FIELD(s.skill_key, 'Q', 'W', 'E', 'R', 'D', 'F'), s.id
+    </select>
+
+</mapper>

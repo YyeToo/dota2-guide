@@ -2,10 +2,9 @@ package com.dota.guide.service;
 
 import com.dota.guide.common.PageResult;
 import com.dota.guide.entity.Hero;
-import com.dota.guide.entity.HeroDetailRow;
 import com.dota.guide.entity.HeroDetailVO;
-import com.dota.guide.entity.HeroSkill;
 import com.dota.guide.mapper.HeroMapper;
+import com.dota.guide.query.HeroQuery;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -18,18 +17,22 @@ import java.util.List;
  * 都写在 Service 里，Controller 只负责"接请求、返回结果"。
  * 分层让每层职责单一，好维护、好测试。
  *
- * 第二阶段升级：
- *   1. listHeroes → getHeroPage：参数校验 + 计算 offset + 分页查询
- *   2. getHeroById → getHeroDetail：把 JOIN 查出的"扁平行"组装成 英雄+技能 结构
+ * ============================================================
+ * 这一版比上一版短了将近一半，少掉的都是"搬运"
+ * ============================================================
+ *   1. 分页参数兜底（page<1 当 1、size 超上限砍掉）搬进了 HeroQuery 的 setter ——
+ *      这条不变量归数据自己管，Service 不用每次再检查一遍；
+ *   2. getHeroDetail(id) / getHeroDetailBySlug(slug) 合并成一个 getHeroDetail(key)，
+ *      因为 Mapper 的一条查询就能同时认两种标识；
+ *   3. 40 行的 assembleDetail（把 JOIN 出来的扁平行手工拼成嵌套结构）
+ *      整个删掉了 —— 这件事现在由 HeroMapper.xml 里的 <collection> 在 MyBatis
+ *      内部完成，SQL 查出什么形状，返回的对象就是什么形状。
+ *
+ * 剩下的两个方法各做一件事：算分页、判断 key 是不是数字。
+ * 这才是业务层该有的样子：只琢磨业务规则，不掺和数据的搬运和拼装。
  */
 @Service // 把本类注册为 Spring 容器中的一个 Bean（组件），供 Controller 注入使用
 public class HeroService {
-
-    /** 默认每页条数（和前端保持一致） */
-    private static final int DEFAULT_SIZE = 24;
-
-    /** 每页最多条数：防止有人传 size=999999 一次性拖垮数据库 */
-    private static final int MAX_SIZE = 100;
 
     /**
      * 依赖注入的推荐方式：构造器注入
@@ -44,103 +47,50 @@ public class HeroService {
     /**
      * 分页查询英雄列表
      *
-     * @param keyword    关键词（模糊匹配英雄名/简介）
-     * @param role       定位筛选（如"核心"，模糊匹配 role 列的官方定位标签）
-     * @param pos        号位筛选（如"3号位"，模糊匹配 pos 列）
-     * @param attr       主属性筛选（力量/敏捷/智力，精确匹配 attr 列）
-     * @param complexity 复杂度筛选（1 简单/2 中等/3 困难，精确匹配 complexity 列）
-     * @param page       页码，从 1 开始
-     * @param size       每页条数
+     * 参数校验已经由 HeroQuery 的 setter 完成（对象一造出来 page/size 就一定是合法的），
+     * 所以这里直接查就行。一次请求跑两条 SQL：一条查总数、一条查当前页。
+     *
+     * @param query 前端传来的筛选条件 + 分页参数
      */
-    public PageResult<Hero> getHeroPage(String keyword, String role, String pos,
-                                        String attr, Integer complexity, int page, int size) {
-        // 参数兜底：前端传脏数据（page=0、size=-1）时也能正常工作，
-        // 真实项目里这种防御性校验是 Service 的常见职责
-        if (page < 1) {
-            page = 1;
-        }
-        if (size < 1) {
-            size = DEFAULT_SIZE;
-        }
-        if (size > MAX_SIZE) {
-            size = MAX_SIZE;
-        }
-
-        // 第 2 页取 24 条 = 跳过前 (2-1)*24 = 24 条，这是分页的核心换算
-        int offset = (page - 1) * size;
-
-        // 一次请求里跑两条 SQL：一条查总数、一条查当前页
-        long total = heroMapper.countByFilter(keyword, role, pos, attr, complexity);
-        List<Hero> list = heroMapper.findByPage(keyword, role, pos, attr, complexity, offset, size);
+    public PageResult<Hero> getHeroPage(HeroQuery query) {
+        long total = heroMapper.countByFilter(query);
+        List<Hero> list = heroMapper.findByPage(query);
         return new PageResult<>(total, list);
     }
 
     /**
-     * 查询英雄详情（含技能列表）；英雄不存在时返回 null，由 Controller 决定如何响应
-     */
-    public HeroDetailVO getHeroDetail(Long id) {
-        List<HeroDetailRow> rows = heroMapper.findDetailRows(id);
-        // 英雄不存在：LEFT JOIN 也查不出任何行
-        if (rows.isEmpty()) {
-            return null;
-        }
-        return assembleDetail(rows, id);
-    }
-
-    /**
-     * 按 slug 查询英雄详情（第六阶段新增）
-     * slug 是英雄英文内部名（如 sven，来自官网头像文件名），
-     * 教学页的"代表英雄"链接用它——比数字 id 稳定、可读
-     */
-    public HeroDetailVO getHeroDetailBySlug(String slug) {
-        List<HeroDetailRow> rows = heroMapper.findDetailRowsBySlug(slug);
-        if (rows.isEmpty()) {
-            return null;
-        }
-        // heroId 从查询结果第 1 行取（slug 查出来才知道是几号英雄）
-        return assembleDetail(rows, rows.get(0).getId());
-    }
-
-    /**
-     * 组装"一对多"详情数据（id 查询和 slug 查询共用，避免两份一样的代码）
+     * 查询英雄详情（含技能列表）
      *
-     * 这里演示组装过程：SQL 查出的是扁平行（英雄信息重复、技能信息逐行不同），
-     * 本方法把第 1 行的英雄字段 + 每行的技能字段，拼成 HeroDetailVO。
+     * key 既可以是数字 id（/api/heroes/3，老书签还在用）也可以是 slug
+     * （/api/heroes/sven，站内链接用它，因为 slug 是永久稳定的英文内部名）。
+     * 前端不需要判断自己手上是哪种 —— 判断放在这里做一次，外面就不用关心了。
+     *
+     * @param key 英雄标识：数字 id 或 slug
+     * @return 英雄详情；查无此人时返回 null，由 Controller 决定如何响应
      */
-    private HeroDetailVO assembleDetail(List<HeroDetailRow> rows, Long heroId) {
-        // 组装英雄基础信息（每行的英雄字段都一样，取第 1 行即可）
-        HeroDetailRow first = rows.get(0);
-        HeroDetailVO vo = new HeroDetailVO();
-        vo.setId(first.getId());
-        vo.setName(first.getName());
-        vo.setSlug(first.getSlug());
-        vo.setAlias(first.getAlias());
-        vo.setRole(first.getRole());
-        vo.setPos(first.getPos());
-        vo.setAttr(first.getAttr());
-        vo.setAttack(first.getAttack());
-        vo.setComplexity(first.getComplexity());
-        vo.setAvatar(first.getAvatar());
-        vo.setIntro(first.getIntro());
-        vo.setTips(first.getTips());
-        vo.setItems(first.getItems());
-        vo.setCounters(first.getCounters());
+    public HeroDetailVO getHeroDetail(String key) {
+        // 是纯数字就额外传一个数值形式的 id，让 SQL 能命中 id 那一支；
+        // 不是数字就传 null，SQL 里 `h.id = NULL` 恒不成立，这一支自动失效。
+        // parseLong 可能溢出（用户传一串超长数字），所以交给 try/catch 兜住：溢出就当成 slug 查。
+        Long numericKey = toNumericKey(key);
+        return heroMapper.findByKey(key, numericKey);
+    }
 
-        // 组装技能列表：跳过"技能列为 NULL"的行（英雄没技能时 LEFT JOIN 产生的）
-        for (HeroDetailRow row : rows) {
-            if (row.getSkillId() == null) {
-                continue;
-            }
-            HeroSkill skill = new HeroSkill();
-            skill.setId(row.getSkillId());
-            skill.setHeroId(heroId);
-            skill.setSkillKey(row.getSkillKey());
-            skill.setSkillType(row.getSkillType());
-            skill.setSkillSource(row.getSkillSource());
-            skill.setSkillName(row.getSkillName());
-            skill.setSkillDesc(row.getSkillDesc());
-            vo.getSkills().add(skill);
+    /**
+     * 把 key 转成数字 id；不是纯数字（或是超出 Long 范围的天文数字）时返回 null
+     *
+     * "\d+" 只认整串数字，所以 "sven"、"12abc"、"sven2" 都会返回 null；
+     * "003" 这种能转成 3，但数据库里没有 id=3 的 slug 叫 "003"，不会误伤。
+     */
+    private Long toNumericKey(String key) {
+        if (key == null || !key.matches("\\d+")) {
+            return null;
         }
-        return vo;
+        try {
+            return Long.valueOf(key);
+        } catch (NumberFormatException e) {
+            // 数字长到 Long 装不下 —— 那它一定不是合法 id，当 slug 处理即可
+            return null;
+        }
     }
 }
