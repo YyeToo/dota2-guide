@@ -76,9 +76,17 @@ class HeroApiIntegrationTest {
     /**
      * 取全部英雄（size 给大一点，一次拿完，方便做整体校验）。
      *
-     * ⚠️ 这里必须断言「列表非空」。下面好几条测试都是「遍历每个英雄，检查某字段」的形式 ——
-     * 英雄表空的时候那个循环一次都不执行，测试会**假通过**。而空表恰恰是那个
-     * fresh-install bug 的症状，正是最该报错的时候。所以把守卫放在这个公共出口上。
+     * 这个方法里有**两道守卫**，都是为了挡住"测试假通过"：
+     *
+     * 1. 列表非空。下面好几条测试都是「遍历每个英雄，检查某字段」的形式 ——
+     *    英雄表空的时候那个循环一次都不执行，测试会绿。而空表恰恰是那个
+     *    fresh-install bug 的症状，正是最该报错的时候。
+     *
+     * 2. 拿到的条数 == total。请求的是 size=500，但如果这个值被后端的上限
+     *    静默砍掉（HeroQuery.MAX_SIZE 原来就是 100），循环只会遍历到被砍剩的那部分，
+     *    少检查的英雄一个都不会报出来。这条断言把"静默少拿"变成"直接失败"。
+     *
+     * 两道守卫都放在这个公共出口上，所有调用方一次受益。
      */
     private JsonNode fetchAllHeroes() throws Exception {
         JsonNode body = getJson("/api/heroes?size=500");
@@ -88,6 +96,12 @@ class HeroApiIntegrationTest {
         assertFalse(list.isEmpty(),
                 "英雄列表是空的，后面的逐条校验都会假通过。大概率是 SQL 文件导入失败了 —— "
                         + "检查 heroes_full.sql 的 INSERT 列清单是否和 init.sql 的表结构一致（尤其是 slug 列）。");
+
+        long total = body.path("data").path("total").asLong();
+        assertEquals(total, list.size(),
+                "一次请求只要到 " + list.size() + " 条，但总数是 " + total + " 条 —— size 被上限截断了。"
+                        + "这样后面「遍历每个英雄」的检查会漏掉没拿到的那部分，而且不会有任何提示。"
+                        + "如果英雄数确实超过了 size 上限，请把这里的 size 和 HeroQuery.MAX_SIZE 一起调大。");
         return list;
     }
 
@@ -162,13 +176,13 @@ class HeroApiIntegrationTest {
     }
 
     // ============================================================
-    // 2. 详情接口（按 id / 按 slug 两条路）
+    // 2. 详情接口（一个地址，认 slug 也认 id）
     // ============================================================
 
     @Test
-    @DisplayName("按 slug 查详情：/api/heroes/slug/sven 返回斯温")
+    @DisplayName("按 slug 查详情：/api/heroes/sven 返回斯温")
     void detailBySlug() throws Exception {
-        JsonNode body = getJson("/api/heroes/slug/sven");
+        JsonNode body = getJson("/api/heroes/sven");
         assertEquals(200, body.path("code").asInt(), "按 slug 查不到：" + body);
 
         JsonNode hero = body.path("data");
@@ -177,23 +191,47 @@ class HeroApiIntegrationTest {
     }
 
     @Test
-    @DisplayName("按 slug 查不存在的英雄返回 404，而不是 500")
-    void detailByUnknownSlug() throws Exception {
-        JsonNode body = getJson("/api/heroes/slug/no-such-hero-xyz");
+    @DisplayName("查不到的英雄返回 404，而不是 500")
+    void detailByUnknownKey() throws Exception {
+        JsonNode body = getJson("/api/heroes/no-such-hero-xyz");
         assertEquals(404, body.path("code").asInt());
     }
 
     @Test
-    @DisplayName("按 id 查详情的路径没被 /slug/{slug} 抢走")
-    void detailById() throws Exception {
-        // /{id} 是一段路径、/slug/{slug} 是两段，Spring 按段数区分，不会互相抢。
-        // 这条测试就是为了钉住这个结论 —— 万一以后有人改了映射顺序，这里会红。
+    @DisplayName("数字 key 仍然按 id 解析（老书签 /heroes/3 还能用）")
+    void detailByNumericKey() throws Exception {
+        // 详情接口合并成一个 /api/heroes/{key} 之后，数字进来必须还走 id 分支 ——
+        // 否则第七阶段之前留下的书签和首页卡片会全部失效。
         JsonNode list = fetchAllHeroes();
         long firstId = list.get(0).path("id").asLong();
 
         JsonNode body = getJson("/api/heroes/" + firstId);
         assertEquals(200, body.path("code").asInt(), "按 id 查不到：" + body);
         assertEquals(firstId, body.path("data").path("id").asLong());
+    }
+
+    @Test
+    @DisplayName("同一个英雄按 id 和按 slug 查，返回的结构和内容完全一致")
+    void idAndSlugReturnTheSameHero() throws Exception {
+        // key 有两种写法是这一版新加的便利，但便利不能变成"两条返回结构不同的路"。
+        // 这条测试把「两种写法等价」钉死：万一以后有人在 id 分支上多查了或少查了什么，这里会红。
+        JsonNode list = fetchAllHeroes();
+        List<String> problems = new ArrayList<>();
+
+        for (JsonNode summary : list) {
+            long id = summary.path("id").asLong();
+            String slug = summary.path("slug").asText();
+            String name = summary.path("name").asText();
+
+            JsonNode byId = getJson("/api/heroes/" + id).path("data");
+            JsonNode bySlug = getJson("/api/heroes/" + slug).path("data");
+
+            if (!byId.equals(bySlug)) {
+                problems.add(name + "（id=" + id + " / slug=" + slug + "）");
+            }
+        }
+        assertTrue(problems.isEmpty(),
+                "这些英雄按 id 查和按 slug 查的结果不一样：" + problems);
     }
 
     // ============================================================
@@ -234,10 +272,10 @@ class HeroApiIntegrationTest {
     void chineseTextIsNotMangled() throws Exception {
         // 编码问题在数据库里表现为「乱码」，在 Java 这边看起来却是合法的字符串 ——
         // 所以不能只看「非空」，要确认拿到的确实是那几个汉字。
-        JsonNode sven = getJson("/api/heroes/slug/sven").path("data");
+        JsonNode sven = getJson("/api/heroes/sven").path("data");
         assertEquals("斯温", sven.path("name").asText());
 
-        JsonNode juggernaut = getJson("/api/heroes/slug/juggernaut").path("data");
+        JsonNode juggernaut = getJson("/api/heroes/juggernaut").path("data");
         assertEquals("主宰", juggernaut.path("name").asText());
         assertFalse(juggernaut.path("intro").asText().isBlank());
     }

@@ -25,6 +25,19 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
 
 mybatis:
+  # XML 形式的 Mapper 文件去哪找。
+  #
+  # ⚠️ 这一行不能省。MyBatis 官方的 Spring Boot Starter **不会**默认去扫
+  # src/main/resources/mapper/ —— 不配这一行，XML 文件照样会被打进 jar，
+  # 但压根不会被读，接口方法找不到对应的 SQL，调用时报：
+  #     Invalid bound statement (not found): com.dota.guide.mapper.HeroMapper.xxx
+  # （网上常说的"默认就扫 classpath*:/mapper/**/*.xml"是 MyBatis-**Plus** 的行为，
+  #   本项目用的是原版 MyBatis，没有这个默认值。）
+  #
+  # classpath*: 开头的星号表示"在所有 classpath 位置里找"，多个 jar 里的同名目录也能扫到；
+  # ** 表示任意层级子目录，所以以后按模块分文件夹（mapper/hero/、mapper/skill/）也不用改这里。
+  mapper-locations: classpath*:/mapper/**/*.xml
+
   configuration:
     # 下划线转驼峰：数据库列 user_name 自动映射到 Java 字段 userName
     # （本项目列名没有下划线，写上作为好习惯，避免以后踩坑）

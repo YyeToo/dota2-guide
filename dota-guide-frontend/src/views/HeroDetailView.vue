@@ -1,7 +1,7 @@
 <!--
   详情页：展示单个英雄的完整资料（简介 / 技能 / 克制 / 打法建议）
-  数据流：从路由参数拿 id（数字 id 或 slug，如 /heroes/18 或 /heroes/sven）
-          → 调用后端 GET /api/heroes/{id} 或 /api/heroes/slug/{slug}
+  数据流：从路由参数拿 key（数字 id 或 slug，如 /heroes/18 或 /heroes/sven）
+          → 调用后端 GET /api/heroes/{key}（后端自己判断是 id 还是 slug）
           → 后端 LEFT JOIN 技能表，返回 { 英雄字段..., skills: [...] }
   第二批视觉美化（2026-10-06）：
     - 头部改成卡片式"英雄横幅"：左侧主属性色竖条 + 淡光晕 + 头像描边/发光
@@ -17,11 +17,15 @@ import { Target, BookOpen, Swords, Gem, ClipboardList, Scale, CircleX, ArrowLeft
 // 全站共享常量：更新日期四页统一取这里
 import { UPDATE_DATE } from '../constants'
 
-// router/index.js 里配置了 props: true，
-// 所以 URL 里的 :id 会作为 prop 传进来。例如访问 /heroes/3 这里的 id 是 "3"；
-// 也支持 slug 链接 /heroes/sven（api/hero.js 里按数字/slug 自动选接口）
+// router/index.js 里配了一个 props 函数，把 URL 里的 :key 改名成 heroKey 传进来：
+//   访问 /heroes/sven 这里 heroKey 是 "sven"（站内链接都用 slug）
+//   访问 /heroes/3    这里 heroKey 是 "3"（老书签，还是能打开）
+// 两种都是字符串。不用在这里分辨是哪种 —— 后端一个地址就认下了。
+//
+// 为什么不直接叫 key：key 是 Vue 的保留属性名，声明成 prop 会永远收到 undefined
+// （详见 router/index.js 里的注释）。
 const props = defineProps({
-  id: { type: String, required: true }
+  heroKey: { type: String, required: true }
 })
 
 const router = useRouter()
@@ -66,8 +70,8 @@ async function loadHero() {
   loading.value = true
   error.value = ''
   try {
-    // id 是字符串也没关系：axios 会拼进 URL，后端会自动转成 Long 类型
-    hero.value = await getHeroDetail(props.id)
+    // heroKey 是字符串（"sven" 或 "3"）都行：axios 拼进 URL，后端自己分辨是 id 还是 slug
+    hero.value = await getHeroDetail(props.heroKey)
   } catch (e) {
     error.value = e.message || '加载失败'
   } finally {
