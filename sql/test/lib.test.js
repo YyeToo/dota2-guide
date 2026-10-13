@@ -16,7 +16,7 @@ const { typeOf, grantedBy, pickBaseAbilities } = require('../lib/skills');
 const { sqlStr } = require('../lib/render');
 const { emptyReview, mergeReview, hasBlocking, blockingHits } = require('../lib/review');
 const { buildHeroes } = require('../lib/heroes');
-const { buildSkills } = require('../lib/skills');
+const { buildSkills, compareSkills } = require('../lib/skills');
 const { ALIASES, NEW_HERO_DATA, AVATAR_PREFIX } = require('../lib/vocab');
 
 // ============================================================
@@ -309,7 +309,7 @@ describe('buildSkills', () => {
 
   test('4 个基础技能依次占 Q/W/E/R', () => {
     const { rows } = run([ability('Q'), ability('W'), ability('E'), ability('R', { type: 1 })]);
-    assert.deepEqual(rows.map(r => [r.key, r.source]), [['Q', '基础'], ['W', '基础'], ['E', '基础'], ['R', '基础']]);
+    assert.deepEqual(rows.map(r => [r.key, r.category]), [['Q', '基础'], ['W', '基础'], ['E', '基础'], ['R', '基础']]);
   });
 
   test('魔晶新增占 D、神杖新增占 F', () => {
@@ -318,8 +318,8 @@ describe('buildSkills', () => {
       ability('魔晶技', { ability_is_granted_by_shard: true }),
       ability('神杖技', { ability_is_granted_by_scepter: true }),
     ]);
-    assert.deepEqual(rows.slice(4).map(r => [r.key, r.source, r.name]),
-      [['D', '魔晶', '魔晶技'], ['F', '神杖', '神杖技']]);
+    assert.deepEqual(rows.slice(4).map(r => [r.key, r.category, r.name]),
+      [['D', '魔晶新增', '魔晶技'], ['F', '神杖新增', '神杖技']]);
   });
 
   test('强化已有技能的行按键为空、名字带后缀', () => {
@@ -330,16 +330,93 @@ describe('buildSkills', () => {
     const up = rows.filter(r => r.key === '');
     assert.equal(up.length, 1);
     assert.equal(up[0].name, 'Q·魔晶强化');
-    assert.equal(up[0].source, '魔晶');
+    assert.equal(up[0].category, '魔晶强化');
     assert.equal(up[0].desc, '强化后的描述');
   });
 
-  test('先天技能的强化行名字加「先天·」前缀', () => {
+  test('先天技能的强化行不加名字前缀，改用 innate 列标记', () => {
     const { rows } = run([
       ability('Q'), ability('W'), ability('E'), ability('R', { type: 1 }),
       ability('固有', { ability_is_innate: true, ability_has_scepter: true, scepter_loc: '先天强化' }),
     ]);
-    assert.equal(rows.find(r => r.key === '').name, '先天·固有·神杖强化');
+    const up = rows.find(r => r.key === '');
+    assert.equal(up.name, '固有·神杖强化', '技能名应该是干净的官网原名，不带「先天·」前缀');
+    assert.equal(up.innate, 1);
+  });
+
+  test('非先天的行 innate 为 0', () => {
+    const { rows } = run([ability('Q'), ability('W'), ability('E'), ability('R', { type: 1 })]);
+    assert.deepEqual(rows.map(r => r.innate), [0, 0, 0, 0]);
+  });
+
+  test('sortOrder 每个英雄从 1 连续编号', () => {
+    const { rows } = run([
+      ability('Q'), ability('W'), ability('E'), ability('R', { type: 1 }),
+      ability('Q', { ability_has_shard: true, shard_loc: '强化' }),
+      ability('Q', { ability_has_scepter: true, scepter_loc: '强化' }),
+    ]);
+    assert.deepEqual(rows.map(r => r.sortOrder), [1, 2, 3, 4, 5, 6]);
+  });
+
+  // ⚠️ 这条守的是一个真实踩过的坑：官网数组里神杖技能排在魔晶技能前面时
+  // （宙斯、发条技师、食人魔魔法师、森海飞霞 四个英雄就是这样），
+  // 行的**推入顺序**是 …F,D… ，但游戏里 D 在小键盘上排在 F 前面。
+  // 旧代码靠后端一句 ORDER BY FIELD(...) 掰回来，物化成 sort_order 后
+  // 这个重排必须由生成器自己做 —— 直接拿推入下标当 sort_order 就会让这
+  // 四个英雄的 D/F 静默对调。
+  test('神杖技能在官网数组里排在前面时，D 仍然排在 F 前面', () => {
+    const { rows } = run([
+      ability('Q'), ability('W'), ability('E'), ability('R', { type: 1 }),
+      ability('神杖技', { ability_is_granted_by_scepter: true }),
+      ability('魔晶技', { ability_is_granted_by_shard: true }),
+    ]);
+    assert.deepEqual(rows.map(r => r.key), ['Q', 'W', 'E', 'R', 'D', 'F']);
+    assert.deepEqual(rows.map(r => r.name),
+      ['Q', 'W', 'E', 'R', '魔晶技', '神杖技']);
+  });
+
+  test('同一个按键有两行时，按官网数组顺序定先后', () => {
+    const { rows } = run([
+      ability('Q'), ability('W'), ability('E'), ability('R', { type: 1 }),
+      ability('神杖甲', { ability_is_granted_by_scepter: true }),
+      ability('神杖乙', { ability_is_granted_by_scepter: true }),
+    ]);
+    const f = rows.filter(r => r.key === 'F');
+    assert.deepEqual(f.map(r => r.name), ['神杖甲', '神杖乙']);
+    assert.deepEqual(f.map(r => r.sortOrder), [5, 6]);
+  });
+
+  test('强化行永远排在带按键的技能之后', () => {
+    const { rows } = run([
+      ability('Q'), ability('W'), ability('E'), ability('R', { type: 1 }),
+      ability('Q', { ability_has_shard: true, shard_loc: '强化' }),
+      ability('登场晚的神杖技', { ability_is_granted_by_scepter: true }),
+    ]);
+    // 强化行是第 5 个推入的，但 F 键技能必须排在它前面
+    assert.deepEqual(rows.map(r => r.key), ['Q', 'W', 'E', 'R', 'F', '']);
+  });
+
+  // 上面那条只覆盖到「推入顺序恰好也对」的情况。真正会出错的组合
+  // （空 key 行先于带按键的行被推入）在真实数据里要 BASE_OVERRIDES 才能造出来，
+  // 所以比较器本身单独测，把三级判据一条条钉死。
+  describe('compareSkills 三级判据', () => {
+    const s = (key, seq) => ({ key, seq });
+    const order = arr => arr.slice().sort(compareSkills).map(r => r.key + '#' + r.seq);
+
+    test('空 key 排在所有带按键的行之后', () => {
+      assert.deepEqual(order([s('', 0), s('Q', 1)]), ['Q#1', '#0']);
+      assert.deepEqual(order([s('', 0), s('F', 1)]), ['F#1', '#0']);
+    });
+
+    test('带按键的按 Q < W < E < R < D < F', () => {
+      assert.deepEqual(order([s('F', 0), s('D', 1), s('R', 2), s('E', 3), s('W', 4), s('Q', 5)]),
+        ['Q#5', 'W#4', 'E#3', 'R#2', 'D#1', 'F#0']);
+    });
+
+    test('同按键的两行按 seq 定先后（这是唯一真正的 tie-break）', () => {
+      assert.deepEqual(order([s('F', 9), s('F', 2)]), ['F#2', 'F#9']);
+      assert.deepEqual(order([s('', 9), s('', 2)]), ['#2', '#9']);
+    });
   });
 
   test('基础技能不足 4 个记进复核清单', () => {

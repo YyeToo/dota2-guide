@@ -35,9 +35,15 @@ function renderHeroesSql(rows, now) {
 -- 执行前请先跑 upgrade_v4.sql（给 hero 表加 pos/attr/attack/complexity/avatar 五列）、
 -- upgrade_v5.sql（给 hero 表加 alias 俗称列，搜索框搜俗称要用）和
 -- upgrade_v6_slug.sql（给 hero 表加 slug 唯一标识列，教学页详情链接用）
--- 执行方式（乱码坑务必照抄）：
---   mysql -u root -p --default-character-set=utf8 < heroes_full.sql
---   ⚠️ 必须用 utf8（不是 utf8mb4）！MySQL 26.7 客户端对 utf8mb4 参数有 bug，会静默按 latin1 导入导致中文乱码
+--
+-- ⚠️ 中文乱码坑（结论是实测出来的，别按想当然改）：
+--   本文件开头有一句 SET NAMES utf8mb4; —— **那一句才是真正生效的那道**。
+--   实测：只要文件里有它，两个 mysql 客户端配不配 --default-character-set 结果都对；
+--   而没有它时，MySQL 26.7 的客户端会按 latin1 处理，中文全变成 ä¸»åŠ¨ 这种乱码。
+--   也就是说 26.7 客户端**根本不认** --default-character-set 参数
+--   （不是"utf8mb4 参数有 bug"，是参数整个不生效），光靠命令行参数挡不住。
+--   命令照抄这个即可，参数留着是给「将来某个脚本忘了写 SET NAMES」兜底：
+--     mysql -u root -p --default-character-set=utf8mb4 < heroes_full.sql
 --
 -- 本文件会：TRUNCATE hero 表 → 重新插入 127 名英雄（id 1~127 = 官网英文名首字母顺序）
 -- ============================================================
@@ -89,15 +95,23 @@ function renderSkillsSql(rows, now) {
 --   Q/W/E/R —— 基础技能 + 大招
 --   D —— 魔晶（1400 金币）"新增"技能（游戏里真的多一个技能位）
 --   F —— 神杖（4200 金币）"新增"技能
---   ''（空）—— 魔晶/神杖只"强化已有技能"的强化行，不占新按键，排在最后
--- 技能名后缀：·魔晶强化 / ·神杖强化；"先天·"开头表示强化的是先天技能
+--   ''（空）—— 魔晶/神杖只"强化已有技能"的强化行，不占新按键
+-- 技能名后缀：·魔晶强化 / ·神杖强化
 -- 描述：官网 desc_loc 清洗后（HTML 标签去掉、%token% 已替换成对应数值、%% 还原为 %；
 --       魔晶/神杖强化文本的数值取自 values_shard / values_scepter 的加成值）
 --
+-- 分类事实（这三列是物化出来的，让调用方不用再解析名字，见 lib/skills.js 头部）：
+--   skill_category  基础 / 魔晶新增 / 神杖新增 / 魔晶强化 / 神杖强化
+--   is_innate       1 = 先天技能（不占按键、不占技能位）
+--   sort_order      本行在这个英雄技能列表里的位次，从 1 开始、每个英雄内连续。
+--                   ⚠️ 接口就是按这一列排的，不要再另外 ORDER BY。
+--                   它**不等于**下面的行序历史上曾经等过的那句 FIELD(...) 排序，
+--                   物化时已经把 D/F 的顺序差异算进去了。
+--
+-- 执行前请先跑 upgrade_v7.sql（加 skill_category / is_innate / sort_order 三列，
+-- 并顺手修掉老库里 skill_type/skill_source 注释的乱码）
 -- 执行前请先跑 upgrade_v4.sql（skill_desc 加宽到 1000，官网描述比手写的长）
--- 执行方式（乱码坑务必照抄）：
---   mysql -u root -p --default-character-set=utf8 < skills_full.sql
---   ⚠️ 必须用 utf8（不是 utf8mb4）！原因见 heroes_full.sql 头部说明
+-- 字符集坑与 heroes_full.sql 头部同一套说明，照抄那条命令即可。
 --
 -- 本文件会：TRUNCATE hero_skill 表 → 重新插入全部技能（hero_id 对应 heroes_full.sql 的 1~127）
 -- ============================================================
@@ -108,17 +122,20 @@ USE dota_guide;
 TRUNCATE TABLE hero_skill;
 ALTER TABLE hero_skill AUTO_INCREMENT = 1;
 
-INSERT INTO hero_skill (hero_id, skill_key, skill_type, skill_source, skill_name, skill_desc) VALUES
+-- 列清单必须和 upgrade_v7.sql 改完后的表结构一致，少一列会静默插错位
+INSERT INTO hero_skill (hero_id, skill_key, skill_type, skill_category, is_innate, sort_order, skill_name, skill_desc) VALUES
 `;
 
-  // 按英雄分组输出，每个英雄一块注释，方便新手对照
+  // 按英雄分组输出，每个英雄一块注释，方便新手对照。
+  // 输出顺序就是 sort_order 顺序 —— 导入后的 id 和接口返回的顺序从此一致，
+  // 不会再出现「文件里是 F,D，接口返回 D,F」这种要靠 SQL 掰回来的情况。
   let lastHero = null;
   for (const s of rows) {
     if (s.heroName !== lastHero) {
       sql += `\n-- ---------- ${s.heroName}（hero_id=${s.heroId}） ----------\n`;
       lastHero = s.heroName;
     }
-    sql += `(${s.heroId}, '${sqlStr(s.key)}', '${s.type}', '${s.source}', '${sqlStr(s.name)}', '${sqlStr(s.desc)}'),\n`;
+    sql += `(${s.heroId}, '${sqlStr(s.key)}', '${s.type}', '${s.category}', ${s.innate}, ${s.sortOrder}, '${sqlStr(s.name)}', '${sqlStr(s.desc)}'),\n`;
   }
   sql = stripTrailingComma(sql);
 
@@ -126,8 +143,15 @@ INSERT INTO hero_skill (hero_id, skill_key, skill_type, skill_source, skill_name
 SELECT COUNT(*) AS skill_total FROM hero_skill;
 -- 按键分布（第四阶段官方数据，仅供参考；D/F 数量 = 官网魔晶/神杖新增技能总数）
 SELECT skill_key, COUNT(*) FROM hero_skill GROUP BY skill_key ORDER BY FIELD(skill_key, 'Q', 'W', 'E', 'R', 'D', 'F', '');
--- 来源分布：基础 / 魔晶 / 神杖
-SELECT skill_source, COUNT(*) FROM hero_skill GROUP BY skill_source;
+-- 分类分布：基础 / 魔晶新增 / 神杖新增 / 魔晶强化 / 神杖强化
+SELECT skill_category, COUNT(*) FROM hero_skill GROUP BY skill_category;
+-- 先天技能条数
+SELECT COUNT(*) AS innate_total FROM hero_skill WHERE is_innate = 1;
+
+-- ⚠️ 下面这条**应当返回 0 行**。返回了行说明某个英雄的 sort_order 有断号或重号，
+--    接口就会按错误的顺序返回技能，而且不会报任何错。
+SELECT hero_id, COUNT(*) AS n, MIN(sort_order) AS lo, MAX(sort_order) AS hi
+FROM hero_skill GROUP BY hero_id HAVING lo <> 1 OR hi <> n;
 `;
 
   return sql;
