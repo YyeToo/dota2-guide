@@ -7,11 +7,18 @@
     - 头部改成卡片式"英雄横幅"：左侧主属性色竖条 + 淡光晕 + 头像描边/发光
     - 侧栏属性速览：难度、号位加数值进度条；主属性值用属性色
     - 技能卡：大招/魔晶/神杖卡左侧 3px 色条，悬停按键徽章放大
+  滚动动效（2026-10-13）：
+    - 横幅头像挂视差（v-parallax）：比名字/徽章滚得慢一点
+    - 四个左侧/主列面板 + 技能卡挂滚动触发入场（v-reveal），技能卡逐张错开 60ms
+    - 侧栏进度条改成"滚到才从 0 长到目标宽度"，只长一次
+    - goBack() 改成优先 router.back()：否则返回列表页拿不回滚动位置
 -->
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { getHeroDetail } from '../api/hero'
+// 系统"减弱动态效果"的首选项（进度条在那种情况下直接给终态，不走观察器）
+import { prefersReducedMotion } from '../motion'
 // lucide 图标：全站 emoji 统一换成 SVG 图标库
 import { Target, BookOpen, Swords, Gem, ClipboardList, Scale, CircleX, ArrowLeft } from 'lucide-vue-next'
 // 全站共享常量：更新日期四页统一取这里
@@ -76,9 +83,73 @@ async function loadHero() {
 
 onMounted(loadHero)
 
-// 返回列表页（英雄图鉴在 /heroes）：也可以写 router.back() 回到上一步
+// ---------- 侧栏进度条：滚到才从 0 长到目标宽度 ----------
+// 难度和号位这两条进度条本来是一进页面就"啪"地满格。
+// 现在从 0 长出去，长度本身就成了"这个英雄有多难 / 多能吃资源"的示意。
+//
+// 目标宽度不在 CSS 里，也不在这段 JS 里 —— 它由模板内联写在 <i> 的 --target 上，
+// 样式只管"该不该长"（.side-col.filled）。原因：内联 style 的权重最高，
+// 类选择器压不过它，所以内联只能写**数据**（目标多长），不能写**状态**（现在多长）。
+const sideColEl = ref(null)
+const sideFilled = ref(false)
+let sideObserver = null
+
+// ⚠️ 盯的是**元素本身**（模板 ref），不是 hero。
+//   .side-col 只在"加载完成且没出错"那一支里渲染，盯着 hero 的话，
+//   回调跑起来时那个分支可能还没渲染完、元素还是 null，观察器就永远建不起来。
+//   而模板 ref 从 null 变成元素的那一刻，正好就是这个元素真正进 DOM 的时刻。
+//   flush: 'post' —— ref 是在 DOM 更新过程中赋值的，默认的 'pre' 会跑在它前面。
+watch(
+  sideColEl,
+  (el) => {
+    sideObserver?.disconnect()
+    sideObserver = null
+    if (!el) return
+
+    if (prefersReducedMotion()) {
+      // 不走观察器、也不留 0 宽的那一帧，直接给终态
+      sideFilled.value = true
+      return
+    }
+
+    sideObserver = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[entries.length - 1]
+        if (!entry?.isIntersecting) return
+        sideFilled.value = true
+        // 一次性：长完就断开，之后再怎么滚都不重播
+        // （切换英雄时 hero 变了也不会回到 0 再长一遍 —— 那种"每次都演一遍"
+        //   的动画第二次看就只剩烦躁了）
+        sideObserver.disconnect()
+        sideObserver = null
+      },
+      // 底部往上收 10%：进度条要露出来一点才动
+      { rootMargin: '0px 0px -10% 0px' }
+    )
+    sideObserver.observe(el)
+  },
+  { flush: 'post' }
+)
+
+onBeforeUnmount(() => {
+  sideObserver?.disconnect()
+  sideObserver = null
+})
+
+// 返回列表页（英雄图鉴在 /heroes）
+//
+// ⚠️ 优先 router.back()，而不是 router.push('/heroes')：
+//   push 是**新开**一条历史记录，等于"又去了一次列表页"，
+//   浏览器的滚动恢复拿不到 savedPosition（见 router/index.js 的 scrollBehavior），
+//   于是每次返回都把用户扔回列表顶部 —— 而他刚刚明明是在第 80 张卡那里点进来的。
+//   back() 才是"回到刚才那一页"，滚动位置、筛选条件都还在。
+//
+//   但不能无脑 back()：直接打开链接 / 从收藏夹进来时**站内没有上一页**，
+//   back() 会把人送出站外。history.state.back 是 vue-router 记下的"上一页在站内的地址"，
+//   它为空就说明没有可回的地方，老老实实跳到列表页当兜底。
 function goBack() {
-  router.push('/heroes')
+  if (window.history.state?.back) router.back()
+  else router.push('/heroes')
 }
 </script>
 
@@ -116,8 +187,12 @@ function goBack() {
            颜色读祖先的 data-token 写下的 --attr（main.css 全局定义），
            横幅的左侧竖条、背景光晕、头像描边/发光都跟着主属性变色 -->
       <div class="hero-header card">
+        <!-- 头像挂视差：往下滚时它比名字/徽章慢一点点，横幅有了"厚度"。
+             ⚠️ 位移上限 16px 是被横幅内边距（上下各 20px）卡死的：
+             横幅是 overflow: hidden，位移超过内边距头像就会被切掉一块 -->
         <img
-          class="hero-avatar"
+          class="hero-avatar parallax"
+          v-parallax="{ speed: 0.08, max: 16 }"
           :src="hero.avatar"
           :alt="hero.name"
           @error="($event) => ($event.target.style.display = 'none')"
@@ -138,8 +213,10 @@ function goBack() {
         </div>
       </div>
 
-      <!-- 打法建议面板：教学站最核心的内容，放头部正下方 + 金色描边，一眼就看到 -->
-      <section class="panel tips-panel card">
+      <!-- 打法建议面板：教学站最核心的内容，放头部正下方 + 金色描边，一眼就看到。
+           它和下面几个面板都挂 v-reveal：滚到才淡入上浮一次
+           （横幅不挂 —— 它是页面第一眼，让它等一下再出现只会显得慢） -->
+      <section class="panel tips-panel card reveal" v-reveal>
         <h2><Target :size="18" class="h-icon" />打法建议</h2>
         <p>{{ hero.tips }}</p>
       </section>
@@ -149,19 +226,25 @@ function goBack() {
       <div class="content-grid">
         <div class="main-col">
           <!-- 简介面板 -->
-          <section class="panel card">
+          <section class="panel card reveal" v-reveal>
             <h2><BookOpen :size="18" class="h-icon" />英雄简介</h2>
             <p>{{ hero.intro }}</p>
           </section>
 
           <!-- 技能面板：skills 数组来自后端的一对多 JOIN 查询 -->
-          <section class="panel card">
+          <section class="panel card reveal" v-reveal>
             <h2><Swords :size="18" class="h-icon" />技能介绍</h2>
             <div class="skill-grid">
+              <!-- 技能卡逐张错开 60ms 出场（i % 3 让每行内的三张错开，
+                   第四张又回到 0 —— 一行一行地"铺"下来，而不是整片一起冒）。
+                   ⚠️ 卡片上的 :class 是动态绑定的，v-reveal 对此是安全的，
+                   但前提是绑定值对同一张卡**不会变**（skillBarClass 只跟按键字母有关，
+                   见 directives/reveal.js 顶部那条约束） -->
               <div
-                v-for="skill in keyedSkills"
+                v-for="(skill, i) in keyedSkills"
                 :key="skill.id"
-                class="skill-card card card-sm"
+                class="skill-card card card-sm reveal"
+                v-reveal="60 * (i % 3)"
                 :class="skillBarClass(skill)"
               >
                 <!-- 按键徽章：Q/W/E 灰色，R（大招）金色，D（魔晶新技能）紫色，F（神杖新技能）蓝色 -->
@@ -181,10 +264,15 @@ function goBack() {
           </section>
 
           <!-- 魔晶/神杖强化面板：只强化已有技能、不占新按键，所以不标按键字母 -->
-          <section v-if="upgradeSkills.length" class="panel card">
+          <section v-if="upgradeSkills.length" class="panel card reveal" v-reveal>
             <h2><Gem :size="18" class="h-icon" />魔晶 / 神杖强化</h2>
             <div class="skill-grid">
-              <div v-for="skill in upgradeSkills" :key="skill.id" class="skill-card card card-sm">
+              <div
+                v-for="(skill, i) in upgradeSkills"
+                :key="skill.id"
+                class="skill-card card card-sm reveal"
+                v-reveal="60 * (i % 3)"
+              >
                 <div class="skill-info">
                   <div class="skill-title">
                     <h3>{{ skill.skillName }}</h3>
@@ -199,8 +287,9 @@ function goBack() {
           </section>
         </div>
 
-        <!-- 右栏：侧栏（窄栏固定宽度，信息速览用） -->
-        <aside class="side-col">
+        <!-- 右栏：侧栏（窄栏固定宽度，信息速览用）。
+             ref 用来挂"进度条该长了"的观察器；filled 就是这个状态（见 script） -->
+        <aside class="side-col" :class="{ filled: sideFilled }" ref="sideColEl">
           <!-- 属性速览面板：和头部徽章信息相同，但这里用"标签:值"的表格形式，一眼扫全。
                第二批：数值型的项（难度/号位）在下面加了一条进度条，见下 -->
           <section class="panel card">
@@ -225,9 +314,12 @@ function goBack() {
                   <span class="stat-label">操作难度</span>
                   <span class="stat-value">{{ starText }}</span>
                 </div>
-                <!-- 难度进度条：复杂度 1~3 映射成 33% / 66% / 100% 填充 -->
+                <!-- 难度进度条：复杂度 1~3 映射成 33% / 66% / 100% 填充。
+                     ⚠️ 内联写的是 --target（目标宽度），不是 width（当前宽度）：
+                     内联 style 的权重最高，把 width 写在这里的话 CSS 就再也压不动它，
+                     进度条会长不出来。当前宽度由样式根据 .side-col.filled 决定 -->
                 <div class="stat-bar">
-                  <i :style="{ width: ((hero.complexity || 1) / 3) * 100 + '%' }"></i>
+                  <i :style="{ '--target': ((hero.complexity || 1) / 3) * 100 + '%' }"></i>
                 </div>
               </li>
               <li v-if="hero.pos">
@@ -238,7 +330,7 @@ function goBack() {
                 <!-- 资源优先级进度条：1 号位吃资源最多（满格）→ 5 号位最少（1/5 格），
                      填充比例由 script 里的 posFill 算好 -->
                 <div v-if="posFill" class="stat-bar">
-                  <i :style="{ width: posFill + '%' }"></i>
+                  <i :style="{ '--target': posFill + '%' }"></i>
                 </div>
               </li>
             </ul>
@@ -345,9 +437,11 @@ function goBack() {
    "这个值用属性色写"的形状 */
 .attr-text { color: var(--attr); }
 
-/* ---------- 数值进度条（第二批） ----------
+/* ---------- 数值进度条（第二批，2026-10-13 改成"滚到才长"） ----------
    难度 / 号位这类"数值型"项在数值下面加一条 4px 进度条：
-   底色是暗轨道，金色内条按百分比填充（宽度由模板内联 style 给） */
+   底色是暗轨道，金色内条按百分比填充。
+   目标宽度由模板内联写在 <i> 的 --target 上，这里分成两半：
+     常态 width: 0（还没长）→ .side-col.filled 时才 = var(--target)（长到位） */
 .stat-bar {
   margin-top: 8px;
   height: 4px;
@@ -361,7 +455,25 @@ function goBack() {
   height: 100%;
   border-radius: 2px;
   background: var(--gold);
-  transition: width 0.3s;   /* 切换英雄时宽度变化有个小动画 */
+  /* 起点：0 宽。没这一句的话内条会先按"浏览器默认宽度"闪一下再缩回去 */
+  width: 0;
+  /* 用入场时长而不是原来的 0.3s：这是"长出来"的展示动画，
+     和卡片浮上来是同一类动作，时长该一致 */
+  transition: width var(--dur-reveal) var(--ease-out);
+}
+
+/* "该长了"：滚到侧栏（或它本来就在首屏）时由 script 加上 filled。
+   切换英雄时 hero 变了也**不会**回到 0 重长一遍（观察器已经断开）——
+   那种"每次进来都演一遍"的动画，看第二次就只剩烦躁 */
+.side-col.filled .stat-bar i {
+  width: var(--target);
+}
+
+/* 系统要求减弱动态效果：直接给终态，不要那条"长出来"的过程 */
+@media (prefers-reduced-motion: reduce) {
+  .stat-bar i {
+    transition: none;
+  }
 }
 
 .status {
@@ -397,12 +509,7 @@ function goBack() {
   margin-bottom: 8px;
 }
 
-/* "基于版本 / 更新日期"一行 */
-.meta-line {
-  text-align: center;
-  font-size: 12px;
-  color: var(--muted-2);
-}
+/* （"基于版本 / 更新日期"这一行的 .meta-line 样式已收进 main.css 的四页共用部分） */
 
 /* 英雄横幅（第二批）：不再是裸排的头像+文字，而是卡片式横幅——
    左侧 3px 主属性色竖条（和图鉴卡片呼应）、左上角一层属性色淡光晕。
@@ -504,31 +611,16 @@ function goBack() {
   background: var(--muted-tint);
 }
 
-/* 信息面板：底色/边框/圆角/悬停由全局 .card 统一提供（2026-10-06 美化） */
-.panel {
-  padding: 24px;
-}
-
-/* 标题图标与文字用 flex 排布、gap 8px（用户要求，替代 vertical-align 基线对齐） */
-.panel h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 18px;
-  color: var(--text);
-  margin-bottom: 12px;
-}
-
-/* 标题里的 SVG 图标 */
-.h-icon {
-  color: var(--gold);
-  flex-shrink: 0;   /* 图标不被压缩变形 */
-}
-
+/* 信息面板的底色/边框/圆角/悬停由全局 .card 提供，
+   内边距和标题/正文的字号则来自 main.css 的"四页共用"一节
+   （2026-10-13 收拢：四页原来各写各的，字号差 2px、margin 差 4px，
+   单看哪一页都没问题，来回翻就露馅）。
+   这里只剩一条本页独有的： */
 .panel p {
-  font-size: 15px;
-  color: var(--text);
-  white-space: pre-wrap; /* 保留换行，长文本自动换行 */
+  /* 保留换行：tips / intro / counters 这几段数据本来就是多行文本，
+     而浏览器默认会把换行折成空格，整段糊成一大坨。
+     只在这一页需要 —— 其他三页的面板正文都是单行文本，pre-wrap 没有作用对象 */
+  white-space: pre-wrap;
 }
 
 /* 打法建议面板：金色描边 + 浅金底色，放在头部正下方最显眼的位置

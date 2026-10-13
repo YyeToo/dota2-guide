@@ -4,6 +4,8 @@
 // ⚠️ 默认首页是新手须知（用户要求），英雄图鉴在 /heroes
 // ============================================================
 import { createRouter, createWebHistory } from 'vue-router'
+// 内容异步加载的页面需要"补恢复"滚动位置，见 scrollBehavior 里的说明
+import { setPendingScroll } from '../composables/scrollRestore'
 import HomeView from '../views/HomeView.vue'
 import HeroDetailView from '../views/HeroDetailView.vue'
 import GuideView from '../views/GuideView.vue'
@@ -53,7 +55,39 @@ const router = createRouter({
   // HTML5 History 模式：URL 干净无 # 号（如 /heroes/3）
   // 另一种 hash 模式 URL 是 /#/heroes/3，不需要服务器配置，但不好看
   history: createWebHistory(),
-  routes
+  routes,
+
+  // 切换路由时滚动到哪 —— 三个分支，缺一个都会出问题
+  scrollBehavior(to, from, savedPosition) {
+    // ① 浏览器前进/后退：恢复离开时的位置。
+    //    savedPosition 只在"有历史记录可回"时才有值，也就是走了 router.back()
+    //    或浏览器后退按钮的那条路。
+    //    ⚠️ 详情页的"返回列表"必须用 router.back() 才吃得到这一条：
+    //    写 router.push('/heroes') 是**新开**一条历史，savedPosition 是 null，
+    //    结果就是每次返回都回到列表顶部 —— 而用户刚刚是在第 80 张卡那里点进去的
+    if (savedPosition) {
+      // 顺手记一笔，让内容异步加载的页面（图鉴页）在数据到位后自己补一次。
+      // ⚠️ 光靠这里返回 savedPosition 是不够的：这个函数返回的那一刻，
+      //    图鉴页上还只有骨架屏、整页不够高，浏览器会把滚动位置**钳到页面底部**
+      //   （实测想去 3000px，实际停在 606px），等数据回来也没人再纠正。
+      //    详见 composables/scrollRestore.js 的说明。
+      setPendingScroll(savedPosition.top)
+      return savedPosition
+    }
+
+    // ② 同一个页面内换参数：不动。
+    //    ⚠️ 这条是给进阶页的页签用的：它靠 router.replace({query:{part:N}}) 把页签
+    //    写进 URL。如果这里返回 {top:0}，每点一次页签页面就"跳回顶部"，
+    //    而页签切换本来应该是原地左右滑动 —— 那是最容易被当成"滑动坏了"的回归。
+    if (to.name === from.name) return false
+
+    // ③ 其余的页面跳转：从新页面顶部开始看。
+    //    换页后停在上一页的滚动深度是没道理的（两个页面的内容毫无关系）。
+    //    这里必须把①记下的那笔**清掉**：否则"用户点导航栏去图鉴页"这种
+    //    正常的前进跳转，也会被一个过期的位置拽到半空中去
+    setPendingScroll(0)
+    return { top: 0 }
+  }
 })
 
 export default router

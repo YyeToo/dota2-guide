@@ -7,8 +7,13 @@
      2. 背景加三团固定的彩色模糊光斑（红/金/紫）——
         毛玻璃的 backdrop-filter 需要有东西可"糊"，糊纯色是看不出效果的
      3. 圆角放大到 16px，字体换系统字体栈，动效走统一缓动曲线
-     4. 动效克制（用户要求）：只保留悬停上浮、光带扫过、颜色过渡，
-        不做页面/卡片的入场动画
+     4. 动效克制：只保留悬停上浮、光带扫过、颜色过渡。
+
+   2026-10-13 滚动动效改版：
+     用户要求"多使用滚动触发/滚动联动/视差/吸顶/滚动吸附"，同时保留"克制"基调。
+     最终定下的规格写在下面「滚动动效基建」一节；原来那句"不做入场动画"
+     只针对"页面一进来就整屏飞入"那种做法，本轮加的入场是【滚动到才播一次】
+     的卡片级动效，两者不是一回事。
 
    【和参考站深色模式的两点不同（刻意为之）】
    把参考站深色模式跑起来读了它的真实变量，发现两件事：
@@ -109,6 +114,8 @@
   --dur-micro: 0.2s;    /* 颜色/边框这类微反馈 */
   --dur-std: 0.32s;     /* 位移/阴影这类标准动画 */
   --dur-sheen: 0.7s;    /* 光带扫过（要慢，扫太快看不见） */
+  --dur-reveal: 0.5s;   /* 滚动触发入场：比微反馈长、比光带短——再快就看不出"浮上来" */
+  --lift: 16px;         /* 入场时从下方浮起的距离（"轻量克制"的上限就是这么多） */
   --ease-out: cubic-bezier(0.05, 0.7, 0.1, 1);   /* 出场：快起慢收 */
   --ease-std: cubic-bezier(0.2, 0, 0, 1);        /* 标准缓动 */
 
@@ -204,13 +211,24 @@ body {
    z-index: -1 把它压到所有内容下面（body 的底色会被浏览器提升为
    画布背景，所以 -1 层的伪元素是画在底色之上的，不会看不见）；
    pointer-events: none 保证它不吃鼠标事件。
-   透明度比浅色版高：深色底上光斑太淡就完全看不见了 */
+   透明度比浅色版高：深色底上光斑太淡就完全看不见了
+
+   【2026-10-13 加视差】光斑随页面滚动做极小幅度的反向位移（App.vue 把位移量写进
+   --glow-shift，见 useScrollMetrics）。位移量刻意压在 40px 以内：
+   再大就不是"背景在动"而是"背景在飘"，会干扰阅读。
+   ⚠️ inset 从 0 改成 -48px 0：光斑现在会上下移动，多留出的这一圈是"位移的余量"，
+   没有它的话光斑一移开，视口边缘就会露出 body 底色（一条突兀的硬边）。
+   余量（48px）必须大于最大位移（40px），改位移上限时记得一起看这里。
+   will-change 让浏览器提前把这一层交给合成器，滚动时不用重画背景 */
 body::before {
   content: '';
   position: fixed;
-  inset: 0;
+  inset: -48px 0;
   z-index: -1;
   pointer-events: none;
+  /* --glow-shift 由 App.vue 写在 body 上；没写时的兜底是 0px（= 不动） */
+  transform: translate3d(0, var(--glow-shift, 0px), 0);
+  will-change: transform;
   background:
     radial-gradient(900px 520px at 12% -6%, rgba(200, 53, 43, 0.28), transparent 62%),
     radial-gradient(820px 480px at 88% 2%, rgba(240, 178, 50, 0.16), transparent 64%),
@@ -368,6 +386,184 @@ select option {
   box-shadow: none;
 }
 
+/* ============================================================
+   四页共用的基础样式：横幅 / 面板 / 标题图标
+   ------------------------------------------------------------
+   2026-10-13 收编：这几样原来在 3~4 个页面里各抄了一份，数值已经开始漂
+   （面板 h2 有的 20px 有的 18px、正文有的 16px 有的 14px），同一个东西
+   在不同页面长得不一样，翻页时会觉得"哪里不对但说不上来"。
+   现在定义只剩这一处，页面里删掉同名规则即可。
+   各页仍然保留自己【特有】的部分（如详情页正文要保留换行），
+   公共的才是这里的。
+   ============================================================ */
+
+/* ---------- 页面顶部横幅 ----------
+   形态统一为「纯文字居中」（图鉴页和进阶页原来的样子）：
+   须知页原来是个带光晕的卡片式横幅，和详情页的英雄横幅撞了脸
+   （两种"横幅卡片"长得差不多但含义不同），而且卡片壳子会挡住视差位移的效果。
+   少给它加一层壳，反而干净 */
+.banner {
+  text-align: center;
+}
+
+.banner h1 {
+  font-size: 32px;
+  /* 颜色由全局 .gradient-title 提供（白→金渐变），这里不写 color */
+  margin-bottom: 8px;
+}
+
+/* ⚠️ 用 :not(.meta-line) 把"更新日期"那一行排除掉，而不是写在 .meta-line 里覆盖它：
+   .banner p 是"类+元素"（0,1,1），比单独的 .meta-line（0,1,0）高一档，
+   靠"写在后面"是压不住的 —— 排除掉就没有这场权重官司了 */
+.banner p:not(.meta-line) {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* "内容更新：xxx · 通用概念，不随版本失效"一行（三个内容页统一） */
+.meta-line {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted-2);
+}
+
+/* ---------- 内容面板 ----------
+   底色/边框/圆角/悬停由 .card 提供，这里只定内边距和排版 */
+.panel {
+  padding: 24px;
+}
+
+.panel h2 {
+  display: flex;      /* 图标和文字一行对齐（替代 vertical-align 基线对齐） */
+  align-items: center;
+  gap: 8px;
+  font-size: 20px;
+  color: var(--text);
+  margin-bottom: 16px;
+}
+
+/* 正文：16px + 行高 1.7（阅读舒适优先取上限；原来详情页 15px、进阶页 14px） */
+.panel p {
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+/* 橙色加粗：只标段落主旨，每段最多一处（用户要求） */
+.panel strong {
+  color: var(--gold);
+}
+
+/* 面板标题里的 SVG 图标（lucide 图标走 currentColor，这里指定成金色） */
+.h-icon {
+  color: var(--gold);
+  flex-shrink: 0;   /* 图标不被压缩变形 */
+}
+
+/* ============================================================
+   滚动动效基建（2026-10-13）
+   ------------------------------------------------------------
+   用户点名了五种滚动手法，逐处挑最合适的用，不搞"每处都来一遍"：
+     · .reveal      滚动触发 —— 元素进视口时淡入上浮一次（配 v-reveal 指令）
+     · .sticky-bar  吸顶定位 —— 滚动时固定在视口顶部的工具条
+     · v-parallax   视差     —— 随滚动做小幅位移（配 v-parallax 指令）
+     · .chapter-tab 滚动联动 —— 章节页签，兼作"现在读到哪一节"的指示器
+     · 滚动吸附只用在图鉴页新手推荐区（≤640px 横滑轮播），全站唯一一处
+
+   强度按用户拍板的"轻量克制"：位移 ≤16px、时长 0.5s、只播一次、不循环呼吸，
+   全程尊重 prefers-reduced-motion（本文件末尾统一兜底，
+   指令层另有一道 JS 判断，见 src/directives/）。
+   ============================================================ */
+
+/* ---------- .reveal：滚动触发入场 ----------
+   ⚠️ 这段【必须】写在 .card 之后。
+   .reveal 和 .card 都是单个类（权重都是 0,1,0），谁在后面谁赢 ——
+   而 .reveal 声明的 transition 会把 .card 那条【整体顶掉】，
+   所以下面把 .card 那三项（transform / box-shadow / border-color）原样抄了一遍。
+   漏掉任何一项，卡片的悬停上浮、金边就会从"渐变"变成"瞬间跳变"。
+   （同一个坑、同样的抄法，见 AdvancedView 里 .adv-item 的注释） */
+.reveal {
+  transition: opacity var(--dur-reveal) var(--ease-out),
+              transform var(--dur-reveal) var(--ease-out),
+              box-shadow var(--dur-std) var(--ease-out),
+              border-color var(--dur-micro) ease;
+  /* 交错入场：同屏多张卡错开一点点，比整屏一起冒出来好看。
+     延时由 v-reveal 的 delay 参数写进这个变量（如 60ms×第几张）。
+     播完指令会把这个变量【移除】—— 留着的话悬停反馈也要先等这么久才响应 */
+  transition-delay: var(--reveal-delay, 0s);
+}
+
+/* 隐藏态用 :not(.is-visible) 表达，而不是直接写在 .reveal 上。
+   这样加上 .is-visible 之后本条【不再匹配】，元素自动回落到 .card 的默认值
+   （transform 交还给 .card:hover），两套动效零冲突。
+   反过来写（.reveal 里定义隐藏、.is-visible 里覆盖回默认）就得把
+   .card:hover 的 translateY(-4px) 再抄一遍才能压平，多一处会漂的副本 */
+.reveal:not(.is-visible) {
+  opacity: 0;
+  transform: translateY(var(--lift));
+}
+
+/* ---------- .parallax：随滚动做小幅位移 ----------
+   位移量由 v-parallax 指令算好、写进 --parallax-y（见 src/directives/parallax.js），
+   这里只负责把它翻成一条 transform。
+   分开写的原因：指令只管"数据"，样式只管"怎么用"——
+   以后想让某个元素用的是位移而不是位移，改这一处就够了。
+   没挂指令时 --parallax-y 不存在，兜底 0px，元素老老实实待着。
+   will-change 把它交给合成器：滚动时只移动图层、不重绘内容 */
+.parallax {
+  transform: translate3d(0, var(--parallax-y, 0px), 0);
+  will-change: transform;
+}
+
+/* ---------- .sticky-bar：吸顶玻璃工具条 ----------
+   配方和 .card 同一套（半透明渐变底 + 模糊 + 顶部内高光），
+   区别只在 position: sticky —— 它从"一张浮在内容上的卡片"
+   变成"一条贴着顶栏、永远浮在内容上面的工具条"。
+   z-index 20：盖过下方卡片，同时让开顶栏（顶栏 z-index 50）。
+   ⚠️ blur 比卡片更大（24px vs 20px）+ 饱和度更高：
+   它下面压着的是滚动的卡片，糊得糊得更透才不像一块实心板 */
+.sticky-bar {
+  position: sticky;
+  top: var(--header-h);     /* 让开吸顶顶栏（main.css 定义，随断点变化） */
+  z-index: 20;
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(1.8);
+  -webkit-backdrop-filter: blur(24px) saturate(1.8);   /* Safari 前缀 */
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--glass-shadow);
+}
+
+/* ---------- .chapter-tab：章节页签（须知页 / 进阶页共用） ----------
+   默认灰色，激活时金边 + 淡金底 + 金字。
+   和详情页的 tab-btn 不是一套：那个是筛选药丸（点了就筛），这个是章节导航
+   （点了滚过去、滚动时还会反过来自己高亮）。
+   ⚠️ 全局 button 已经把底色设成 --card-2（更亮的一档），这里要压回 --card，
+   页签才和它身后的面板是同一层玻璃 */
+.chapter-tab {
+  flex: 1;               /* 各页签均分一行 */
+  padding: 12px;
+  background: var(--card);
+  color: var(--muted);
+  display: inline-flex;  /* 图标和文字一行对齐 */
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;   /* 窄屏换行时各自不折行 */
+  transition: border-color var(--dur-micro), color var(--dur-micro), background var(--dur-micro);
+}
+
+.chapter-tab:hover {
+  color: var(--text);
+}
+
+/* 激活态写在 :hover 之后：不然"鼠标停在当前章节上"会被 hover 的灰白色盖掉 */
+.chapter-tab.active {
+  color: var(--gold);
+  border-color: var(--gold);
+  background: var(--gold-tint);
+}
+
 /* ---------- 主属性色 → CSS 变量映射 ----------
    元素挂一个 data-token 属性（如 data-token="str"），这里只负责把主属性色
    写进一组变量；元素自己决定拿哪个变量画什么形状：
@@ -429,11 +625,20 @@ select option {
 
 /* ---------- 无障碍：尊重"减少动态效果"系统设置 ----------
    用户在系统里开了"减少动态效果"（前庭功能障碍 / 晕动症人群会开），
-   就把悬停上浮和光带扫过关掉，只保留颜色变化。
-   这是做动效时的基本礼貌，成本很低 */
+   就把悬停上浮、光带扫过、滚动入场全部关掉，只保留颜色变化。
+   这是做动效时的基本礼貌，成本很低。
+
+   ⚠️ 滚动入场那两条是【第二道保险】：
+   v-reveal 指令里已经先查过 matchMedia，是 reduce 就直接显示、不挂观察器；
+   但用户可能在页面开着的时候改系统设置（matchMedia 变化不会重跑已挂载的指令），
+   或者指令因为别的原因没生效 —— 这里兜住，保证"内容永远看得见"。
+   隐藏态本来就是 opacity: 0，一旦 JS 出错没能加上 .is-visible，
+   用户看到的就是一片空白 —— 这是本文件里【唯一一条会造成内容消失】的样式，
+   所以它必须有 CSS 层面的兜底 */
 @media (prefers-reduced-motion: reduce) {
   .card,
-  .card::after {
+  .card::after,
+  .reveal {
     transition-duration: 0.01ms;
   }
 
@@ -443,6 +648,27 @@ select option {
 
   .card:hover::after {
     opacity: 0;   /* 光带不扫了 */
+  }
+
+  /* 没等到 .is-visible 的元素也直接显示（不动、不淡入） */
+  .reveal:not(.is-visible) {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* 背景光斑的视差也停掉。
+     它和别的动效不一样：位移量是 JS 写进 --glow-shift 的，CSS 里没法"提前拦住"，
+     只能在最后把整条 transform 覆盖掉。
+     这一条是给"页面开着的时候才去打开减弱动态效果"的人兜底的 ——
+     挂载时就已经开着的情况，JS 那边根本不写这个变量 */
+  body::before {
+    transform: none;
+  }
+
+  /* 各页横幅/头像的视差同理：位移是 JS 写进 --parallax-y 的，
+     CSS 拦不住"已经开始写了"，只能把整条 transform 覆盖回去 */
+  .parallax {
+    transform: none;
   }
 
   .skeleton {

@@ -5,9 +5,43 @@
   页头、页脚在所有页面都显示，所以写在这里。
 -->
 <script setup>
+import { watchEffect } from 'vue'
 // 全站图标统一用 lucide-vue-next（SVG 图标库，替代原来的 emoji）：
 // SVG 是矢量图形，任何分辨率都清晰；颜色走 CSS 的 currentColor，hover 变金色天然生效
 import { Shield, BookOpen, Users, TrendingUp } from 'lucide-vue-next'
+// 全站共享的滚动状态（模块级单例，全站只挂一个 scroll 监听）
+import { useScrollMetrics } from './composables/useScrollMetrics'
+// 视差位移的换算（纯函数，有单测）
+import { parallaxOffset } from './domain/parallax'
+// 全局小组件：阅读进度条 / 回到顶部按钮
+import ScrollProgress from './components/ScrollProgress.vue'
+import BackToTop from './components/BackToTop.vue'
+import { prefersReducedMotion } from './motion'
+
+const { scrollY } = useScrollMetrics()
+
+// ---------- 背景光斑的视差 ----------
+// 滚动时那三团彩色光斑（main.css 的 body::before）轻轻往下挪一点，
+// 看起来像浮在页面后面的一层，而不是一层贴死的墙纸。
+// 系数 0.05 + 上限 32px：这是全站幅度最大的一处视差，也刻意压得很小 ——
+// 它铺满整个屏幕，动多了会晕。
+//
+// ⚠️ 写成 --glow-shift 这个 CSS 变量，而不是直接改 body::before 的 transform：
+// 伪元素拿不到 DOM 引用（document.querySelector 选不到 ::before），
+// 只能靠"给 body 设变量、伪元素读变量"这条路传进去。
+//
+// watchEffect 而不是 computed：这里要的是"scrollY 一变就往 DOM 上写一次"，
+// 这个副作用就是目的本身，不是派生值。
+watchEffect(() => {
+  // 开了"减弱动态效果"就一次都不写，光斑钉在原地。
+  // （main.css 末尾还有一条 CSS 兜底，管"页面开着的时候才去改系统设置"的情况）
+  if (prefersReducedMotion()) return
+
+  document.body.style.setProperty(
+    '--glow-shift',
+    parallaxOffset(scrollY.value, 0.05, 32) + 'px'
+  )
+})
 </script>
 
 <template>
@@ -44,6 +78,12 @@ import { Shield, BookOpen, Users, TrendingUp } from 'lucide-vue-next'
     <footer class="app-footer">
       <p>Dota 2 及相关素材归 Valve 所有，本站为非官方学习站点</p>
     </footer>
+
+    <!-- 全站浮层两个：阅读进度条（顶栏下缘）+ 回到顶部按钮（右下角）。
+         都是 position: fixed，写在哪里都一样，放最后是为了不打断
+         "页头 → 内容 → 页脚"这根阅读顺序 -->
+    <ScrollProgress />
+    <BackToTop />
   </div>
 </template>
 

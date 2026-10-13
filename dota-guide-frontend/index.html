@@ -2,6 +2,12 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <!-- ⚠️ 这一行不能删：没有它，手机浏览器会按"980px 宽的桌面页面"来排版，
+         再把整页缩小塞进屏幕 —— 结果是全站所有 max-width 媒体查询在真机上
+         一条都不生效（顶栏不换行、副标题不收、推荐区不横滑），
+         而桌面浏览器缩窗口测试时看起来又一切正常。
+         内容里的 width=device-width 才是"按手机自己的宽度排版" -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <!-- 标签页小图标 -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!-- 页面标题（浏览器标签页上显示） -->

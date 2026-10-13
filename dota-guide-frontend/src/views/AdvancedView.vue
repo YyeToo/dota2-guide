@@ -8,6 +8,11 @@
     - 前三部分（0-5 / 5-10 / 10 分钟后）要点列表改"纵向时间轴"：
       左侧金色渐变竖线，序号圆标钉在线上
     - 第四部分（装备）改双列卡片网格，和前三部分的时间轴区分开
+  视觉统一（2026-10-13）：只换了类名、删掉了搬去 main.css 的样式。
+    - 页签 .tab-btn → 全局 .chapter-tab（和新手须知页同一套章节导航页签）
+    - .banner / .meta-line / .panel / .panel h2 / .h-icon / .panel p / .panel strong
+      的样式收进 main.css 的"四页共用"一节，本页不再各写一份
+  滚动动效（2026-10-13）：**本页不加任何滚动动效**。
 -->
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
@@ -59,6 +64,15 @@ watch(
 )
 
 // ==================== 滚动聚光灯（焦点动画） ====================
+//
+// ★★★ 从这一行起、到本文件下面 "进阶教学要点" 那一行为止，是进阶页的
+//     "滚动身份"，整段**不要动** ★★★
+//   2026-10-13 全站加滚动动效时，这一页是唯一被划为"不改"的：它已经有自己的
+//   滚动语言（聚光灯），再叠一层入场淡入/视差，两种动效会在同一条卡片上打架 ——
+//   比如 v-reveal 挂在 .adv-item 上会覆盖它的 transition，聚光灯的换人动画
+//   直接失效（这就是 main.css 里 .card 的 transition 必须整条抄全的原因）。
+//   要改这段，只能连着 .adv-item 的 transition 一起改，别当成普通样式调整。
+//
 // 需求（用户）：每条建议都是同质卡片，一屏三四条，读者不知道该看哪条，
 //   希望"做个动画让注意力在一条建议上"。
 // 实现：滚动时把【离视口中心最近】的那条建议点亮（金色发光边框 + 序号圆标变实心金
@@ -279,24 +293,26 @@ const ITEMS_TIPS = [
     <!-- 页签切换：四个部分左右滑动切换。
          标签缩短为单行短名（用户要求），完整标题见各面板内的 h2 -->
     <div class="part-tabs">
-      <!-- :class 动态绑定：当前激活的页签加 active 类（金色高亮） -->
+      <!-- :class 动态绑定：当前激活的页签加 active 类（金色高亮）。
+           用的是全局 .chapter-tab（和新手须知页同一套章节导航页签）——
+           以前两页各写一份长得几乎一样的 .tab-btn，改了一处另一处不动 -->
       <button
-        class="tab-btn"
+        class="chapter-tab"
         :class="{ active: activePart === 'laning' }"
         @click="switchPart('laning')"
       >0–5 分钟 · 对线</button>
       <button
-        class="tab-btn"
+        class="chapter-tab"
         :class="{ active: activePart === 'midgame' }"
         @click="switchPart('midgame')"
       >5–10 分钟 · 运营</button>
       <button
-        class="tab-btn"
+        class="chapter-tab"
         :class="{ active: activePart === 'lategame' }"
         @click="switchPart('lategame')"
       >10 分钟后 · 方向</button>
       <button
-        class="tab-btn"
+        class="chapter-tab"
         :class="{ active: activePart === 'items' }"
         @click="switchPart('items')"
       >装备 · 解构</button>
@@ -448,58 +464,11 @@ const ITEMS_TIPS = [
   gap: 24px;
 }
 
-.banner {
-  text-align: center;
-  margin-bottom: 8px;
-}
-
-.banner h1 {
-  font-size: 32px;
-  /* 颜色由全局 .gradient-title 提供（白→金渐变），这里不写 color */
-  margin-bottom: 8px;
-}
-
-.banner p {
-  color: var(--muted);
-  font-size: 14px;
-}
-
-/* "基于版本 / 更新日期"一行（各内容页统一） */
-.meta-line {
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--muted-2);
-}
-
-/* 底色/边框/圆角/悬停由全局 .card 统一提供（2026-10-06 美化） */
-.panel {
-  padding: 24px;
-}
-
-/* 标题图标与文字用 flex 排布、gap 8px（用户要求，替代 vertical-align 基线对齐） */
-.panel h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 20px;
-  color: var(--text);
-  margin-bottom: 16px;
-}
-
-/* 标题里的 SVG 图标 */
-.h-icon {
-  color: var(--gold);
-  flex-shrink: 0;   /* 图标不被压缩变形 */
-}
-
-.panel p {
-  font-size: 14px;
-  color: var(--text);
-}
-
-.panel strong {
-  color: var(--gold);
-}
+/* （横幅 .banner / .banner h1 / .banner p / .meta-line / .panel / .panel h2 /
+   .h-icon / .panel p / .panel strong 的样式都收进了 main.css 的"四页共用"一节；
+   页签也从本页自己的 .tab-btn 换成了全局 .chapter-tab。
+   ⚠️ 本页只剩下面这些"只属于进阶页"的东西，其中滑动轨道那一组尤其别动 ——
+   见本页顶部关于聚光灯的说明） */
 
 .lead {
   margin-bottom: 20px;
@@ -510,30 +479,6 @@ const ITEMS_TIPS = [
   display: flex;
   gap: 12px;
   flex-wrap: wrap;   /* 窄屏自动换行，防止 4 个长页签挤破页面 */
-}
-
-/* 页签按钮：默认灰色，激活时金色高亮 */
-.tab-btn {
-  flex: 1;               /* 各页签均分一行 */
-  padding: 12px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--muted);
-  font-size: 14px;
-  cursor: pointer;
-  transition: border-color 0.2s, color 0.2s, background 0.2s;
-  white-space: nowrap;   /* 短标签保证单行，不折行 */
-}
-
-.tab-btn:hover {
-  color: var(--text);
-}
-
-.tab-btn.active {
-  color: var(--gold);
-  border-color: var(--gold);
-  background: var(--gold-tint);
 }
 
 /* 滑动容器：把滑出视野的面板裁掉（没有它两个面板会同时可见） */

@@ -26,13 +26,19 @@
     3. 复杂度页签：全部 / 简单 / 中等 / 困难（官网"新手可玩"= 复杂度 1）
     4. 定位下拉框换成官网 9 种定位（核心/辅助/爆发/控制/打野/肉盾/逃生/推进/先手）
     5. 号位筛选保留（本教学站自创体系，官网没有）
+  滚动动效（2026-10-13）：
+    - 127 张英雄卡滚动触发入场（v-reveal），骨架卡不挂
+    - 筛选栏吸住之后加深阴影、底更实（哨兵 + IntersectionObserver，见 setupSentinel）
+    - 顶部横幅挂视差（v-parallax）：比卡片滚得慢一点
+    - ≤640px 推荐区改成横向滑动 + 滚动吸附（全站唯一一处 snap）
+    - 从详情页返回时补恢复滚动位置（见 restoreScroll）
 -->
 <script setup>
 // Vue 组合式 API 的常用函数：
 // ref      : 定义"响应式"数据（值变化时页面自动更新）
 // onMounted: 生命周期钩子，组件挂载完成后执行一次（适合发请求）
 // （原来还用了 computed —— 现在派生值都搬进 useHeroQuery 了，这里不再需要）
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, nextTick, onMounted, onBeforeUnmount } from 'vue'
 // lucide 图标：全站 emoji 统一换成 SVG 图标库
 import { Target, Library, Eraser, SearchX, CircleX } from 'lucide-vue-next'
 // useRouter：编程式导航（用代码跳转页面）
@@ -46,6 +52,8 @@ import { UPDATE_DATE } from '../constants'
 import { useHeroQuery } from '../composables/useHeroQuery'
 // 值 → 标识的映射（主属性色 token 等）
 import { attrToken } from '../domain/vocab'
+// 从详情页"返回"过来时，本页要补恢复的滚动位置（见上面 onMounted 的说明）
+import { takePendingScroll } from '../composables/scrollRestore'
 
 const router = useRouter()
 
@@ -101,10 +109,81 @@ async function loadRecommended() {
   }
 }
 
+// ---------- 筛选栏的"已吸住"状态 ----------
+// 筛选栏本来就吸顶，但它吸住前后长得一模一样 —— 卡片从它下面滚过去时，
+// 看着像"栏忽然压住了内容"，层次靠猜。这里在它吸住之后把阴影加深、
+// 再加一层更实的底，让它明确地"浮"起来。
+//
+// 判据用哨兵元素 + IntersectionObserver，而不是每帧读坐标：
+// 哨兵是一个 1px 高、透明的小方块，就贴在筛选栏【上面一行】。
+// 它和筛选栏在文档里占同一个位置，所以"哨兵滚到顶栏后面去了"
+// 和"筛选栏吸住了"是同一件事。
+//
+// ⚠️ 为什么非要一个哨兵，不能直接观察筛选栏自己？
+//   因为它吸住了之后，自己的位置**永远停在顶栏下面**、永远不会离开视口 ——
+//   观察它自己，它会一直报告"我在视口里"，状态永远翻不过去。
+//   要观察的东西必须能真的滚走，所以得另放一个。
+const sentinelEl = ref(null)
+const barScrolled = ref(false)
+let sentinelObserver = null
+
+function setupSentinel() {
+  // 顶栏高度随断点变（≤900px 从一行变两行），每次重设都重新读一遍
+  const headerH =
+    parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--header-h')) || 0
+
+  sentinelObserver?.disconnect()
+  sentinelObserver = new IntersectionObserver(
+    (entries) => {
+      const entry = entries[entries.length - 1]
+      if (!entry) return
+      // ⚠️ 判据是"哨兵的顶边越过顶栏下缘"，**不是** !isIntersecting。
+      //   因为 isIntersecting 为 false 有两种截然不同的情况：
+      //     ① 哨兵滚到顶栏后面去了 —— 这时筛选栏确实吸住了（要的状态）
+      //     ② 哨兵还在屏幕下方、压根没进来 —— 筛选栏还好端端待在原地
+      //   用 !isIntersecting 的话，页面刚打开、筛选栏离屏幕底还有一段距离时
+      //   就会误判成"已吸住"，一进页面就带着吸住的样式。
+      //   比较坐标就分得清 ① 和 ②：只有 ① 会让哨兵跑到顶栏下缘上面去。
+      //   （观察范围被下面的 rootMargin 收窄过，所以"顶栏下缘"就是这条线）
+      barScrolled.value = entry.boundingClientRect.top < headerH
+    },
+    // 负的 top margin 把"观察范围的顶边"从 0 挪到顶栏下缘：
+    // 不加它的话，哨兵要一直滚出屏幕顶才算数 —— 而筛选栏早就吸住了
+    { rootMargin: `-${headerH}px 0px 0px 0px` }
+  )
+  if (sentinelEl.value) sentinelObserver.observe(sentinelEl.value)
+}
+
+// ---------- 从详情页返回时，把滚动位置补回来 ----------
+// 这个页面和另外三页不一样：内容要等后端。浏览器恢复滚动位置发生在
+// **路由切换完成的那一刻**，那时页面上只有骨架屏、整页还不够高，
+// 于是"想去 3000px"会被钳到当时的页面底部（实测 606px）—— 等数据回来
+// 页面变长了，已经没人再去纠正，用户就落在列表中间某处。
+//
+// 所以路由把"本来该落到哪"记在 composables/scrollRestore.js 里，
+// 由知道数据什么时候到的这一页自己补一次。
+async function restoreScroll() {
+  const top = takePendingScroll()
+  if (!top) return          // 0 = 不是"返回"过来的，从顶部看就行
+
+  // ⚠️ 必须等 nextTick：await search() 之后 list 变了，
+  //   但 Vue 把新数据画进 DOM 是在下一个微任务里 ——
+  //   不等它，量到的页面高度还是骨架屏那一版，白恢复一次
+  await nextTick()
+  // 再等一帧：让浏览器把新的布局算完再落位（图片都是 CSS 定尺寸的，
+  // 不会因为加载而再次改变高度，所以这一帧之后位置就是最终的了）
+  requestAnimationFrame(() => window.scrollTo(0, top))
+}
+
 // 组件挂载完成后自动加载：推荐区 + 英雄列表第一页
-onMounted(() => {
+onMounted(async () => {
   loadRecommended()
-  search()
+  // fetchPage 内部把错误都吞进 error.value 了，这个 await 不会抛
+  await search()
+  await restoreScroll()
+  setupSentinel()
+  // 窗口宽度变化会改 --header-h（顶栏换行），观察范围得跟着重设
+  window.addEventListener('resize', setupSentinel)
 })
 
 // ---------- 交互 ----------
@@ -123,8 +202,13 @@ function onKeywordInput() {
   searchTimer = setTimeout(search, 300)
 }
 
-// 组件卸载时清掉还没执行的防抖定时器，避免页面都走了还发请求
-onBeforeUnmount(() => clearTimeout(searchTimer))
+// 组件卸载时清掉还没执行的防抖定时器和观察器，
+// 否则页面都走了还发请求 / 观察器闭包一直引用着这个组件的状态（内存泄漏）
+onBeforeUnmount(() => {
+  clearTimeout(searchTimer)
+  sentinelObserver?.disconnect()
+  window.removeEventListener('resize', setupSentinel)
+})
 
 // 下拉框切换筛选（@change 即时生效）：改了条件就重查，两行都不用管页码
 function onFilterChange() {
@@ -158,8 +242,9 @@ function goDetail(hero) {
 
 <template>
   <div class="home">
-    <!-- 顶部横幅：说明 + 数据来源合并成一行（用户要求，原来两行） -->
-    <div class="banner">
+    <!-- 顶部横幅：说明 + 数据来源合并成一行（用户要求，原来两行）。
+         挂视差：往下滚时它比列表慢一点，页面有"层"的感觉 -->
+    <div class="banner parallax" v-parallax="{ speed: 0.1, max: 24 }">
       <h1 class="gradient-title">英雄图鉴</h1>
       <p class="meta-line">127 名英雄 · 数据对齐 dota2.com 官网 · 点击卡片查看技能与新手打法 · 数据更新：{{ UPDATE_DATE }}</p>
     </div>
@@ -192,9 +277,16 @@ function goDetail(hero) {
     <!-- 全部英雄：受下方筛选栏控制 -->
     <h2 class="section-title"><Library :size="18" class="h-icon" />全部英雄</h2>
 
-    <!-- 筛选栏：主属性页签 + 复杂度页签 + 搜索框 + 定位/号位下拉框
-         position: sticky 吸顶（见样式区）：往下翻列表时筛选栏固定在视口顶部 -->
-    <div class="filter-bar">
+    <!-- 哨兵：筛选栏的"已吸住"探针（见 script 里的 setupSentinel）。
+         高度 1px + 下边距 -1px = 在布局上完全不占位置，
+         但它能像普通元素一样被滚动、被观察。
+         aria-hidden：它是纯装饰，读屏软件不该读它 -->
+    <div class="filter-sentinel" ref="sentinelEl" aria-hidden="true"></div>
+
+    <!-- 筛选栏：主属性页签 + 复杂度页签 + 搜索框 + 定位/号位下拉框。
+         吸顶玻璃配方来自全局 .sticky-bar（position/top/模糊/边框/圆角）；
+         滚上去吸住之后额外加 .scrolled，阴影加深、底更实 -->
+    <div class="filter-bar sticky-bar" :class="{ scrolled: barScrolled }">
       <!-- 主属性页签：官网同款分组（力量/敏捷/智力/全才），精确筛选。
            data-token 带着该属性的颜色（见 main.css 的 [data-token="…"]），
            选中态直接读 --attr，和卡片徽章同一份定义 -->
@@ -291,11 +383,16 @@ function goDetail(hero) {
       </div>
 
       <div v-else class="hero-grid">
-        <!-- v-for 循环渲染卡片；:key 必须唯一，Vue 用它做高效更新 -->
+        <!-- v-for 循环渲染卡片；:key 必须唯一，Vue 用它做高效更新。
+             reveal + v-reveal：卡片滚进视口时淡入上浮一次。
+             首屏那批由指令判定"本来就在视口里"，直接显示、不播动画；
+             "加载更多"追加的新卡挂载时还在屏幕外，滚到才会动。
+             骨架卡不挂 —— 它们是临时占位，闪一下没意义 -->
         <div
           v-for="hero in heroes"
           :key="hero.id"
-          class="hero-card card"
+          class="hero-card card reveal"
+          v-reveal
           :data-token="attrToken(hero.attr)"
           @click="goDetail(hero)"
         >
@@ -353,27 +450,11 @@ function goDetail(hero) {
   padding: 32px 24px;
 }
 
+/* 横幅的文字样式（居中、h1 字号、meta 行）在 main.css 的四页共用部分，这里不重复。
+   只留一个间距：本页是普通的块级流式布局（没有 flex gap 帮忙排间距），
+   横幅和下方内容之间的距离得自己给 */
 .banner {
-  text-align: center;
   margin-bottom: 24px;
-}
-
-.banner h1 {
-  font-size: 32px;
-  /* 颜色由全局 .gradient-title 提供（白→金渐变），这里不写 color */
-  margin-bottom: 8px;
-}
-
-.banner p {
-  color: var(--muted);
-  font-size: 14px;
-}
-
-/* "基于版本 / 更新日期"一行（各内容页统一） */
-.meta-line {
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--muted-2);
 }
 
 /* ---------- 区块标题（新手推荐 / 全部英雄） ---------- */
@@ -386,11 +467,7 @@ function goDetail(hero) {
   margin-bottom: 14px;
 }
 
-/* 标题里的 SVG 图标 */
-.h-icon {
-  color: var(--gold);
-  flex-shrink: 0;
-}
+/* （.h-icon 标题图标已收进 main.css 的四页共用部分） */
 
 /* 空状态的大图标：灰色，呼应空状态的"无结果"氛围 */
 .empty-icon {
@@ -452,28 +529,97 @@ function goDetail(hero) {
   text-overflow: ellipsis;
 }
 
+/* ---------- 推荐区：手机端改成横滑轮播（全站唯一一处滚动吸附） ----------
+   为什么只有这里用滚动吸附：宽屏下 8 张推荐卡一屏放得下，
+   吸附没有作用对象；窄屏下它们会折成 3~4 行，把"新手该先看什么"
+   这一屏能看完的信息推到了需要滚动的位置。
+   改成一行横滑之后，手指一划、一松，卡片**自动停在格子上**（snap），
+   不需要精确地对齐——这才是吸附真正解决的问题，不是"让滚动变好看" */
+@media (max-width: 640px) {
+  .recommend-grid {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    /* mandatory：松手一定吸附（proximity 是"差不多才吸"，手感更糊） */
+    scroll-snap-type: x mandatory;
+    /* 两端出血：让卡片能一直滚到屏幕边缘，视觉上像"还有更多"，
+       但 padding 又把第一张/最后一张从边缘推回来，不贴边 */
+    margin: 0 -24px;
+    padding: 4px 24px;
+    /* 滚动条在手机上本来就隐藏，桌面窄窗口下会冒出来挡住卡片底部，
+       这里直接收掉——横滑的内容靠露出半张卡片暗示，不靠滚动条 */
+    scrollbar-width: none;
+  }
+
+  .recommend-grid::-webkit-scrollbar {
+    display: none;
+  }
+
+  .recommend-card {
+    /* flex 下卡片不再被网格拉宽，得自己定宽；110px 沿用桌面端的列宽 */
+    flex: 0 0 110px;
+    scroll-snap-align: start;
+  }
+}
+
+/* ---------- 筛选栏的"已吸住"探针 ----------
+   高度 1px、下边距 -1px：在文档流里占 1px 高度但又被负边距抵消回去，
+   等于**对布局零影响**，却是一个能被滚动、被 IntersectionObserver 观察的真实元素。
+   为什么要 1px 不能是 0：零面积的元素在观察器里报不报"相交"各家浏览器
+   历史上不一致，1px 是最省心的写法 */
+.filter-sentinel {
+  height: 1px;
+  margin-bottom: -1px;
+}
+
 /* ---------- 筛选栏 ----------
    吸顶玻璃工具条（2026-10-07 改版）：
    原来是一块"页面底色的实心板"——浅色主题下实心板会在光斑背景上
    切出一条突兀的色带；改成和卡片同一套毛玻璃配方，
-   它就从"一块遮罩"变成了"一张浮在内容上面的玻璃工具条"，
-   和参考站里那些浮动的玻璃面板是同一个语言 */
+   它就从"一块遮罩"变成了"一张浮在内容上面的玻璃工具条"。
+   2026-10-13：那套配方收进了全局 .sticky-bar（须知页的章节页签栏也要用），
+   这里只留本页特有的布局 */
 .filter-bar {
   display: flex;
   flex-direction: column;
   gap: 12px;
   margin-bottom: 24px;
-  /* 吸顶工具条（用户要求）：往下翻英雄列表时，筛选栏固定在视口顶部 */
-  position: sticky;
-  top: var(--header-h);     /* 让开吸顶顶栏的高度（main.css 定义，随断点变化） */
-  z-index: 20;              /* 盖过下方卡片（顶栏 z-index 50 在其上） */
-  background: var(--glass-bg);   /* 毛玻璃底：盖住滚上来的卡片，又不完全挡死 */
-  backdrop-filter: blur(24px) saturate(1.8);
-  -webkit-backdrop-filter: blur(24px) saturate(1.8);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--glass-shadow);
   padding: 14px 16px;
+  /* 只过渡阴影：它是这里唯一会随滚动状态变化、又能被插值的属性 */
+  transition: box-shadow var(--dur-std) var(--ease-out);
+}
+
+/* 第二层"玻璃"：和 .sticky-bar 同一个渐变，叠上去就厚了一档。
+   ⚠️ 为什么要这么绕——背景是一条 linear-gradient，**渐变没法插值过渡**，
+   把 background 从 A 换成 B 只会"啪"地跳过去。所以把要淡入的那层
+   拿出来做成伪元素，改它能被插值的 opacity。
+   ⚠️ z-index: -1 的位置很关键：.sticky-bar 有 z-index: 20，
+   本身就是个层叠上下文，负 z-index 的伪元素会画在
+   【父元素自己的背景之上、所有子元素之下】——正好是"覆盖层"该在的位置。
+   ⚠️ 别再给 .filter-bar 加 position: relative 来"帮忙"定位：
+   sticky 也是定位元素，绝对定位伪元素照样以它为参照；
+   改成 relative 反而会把吸顶弄坏 */
+.filter-bar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;   /* 跟着父元素圆角，不然四个角会露出直角 */
+  background: var(--glass-bg);
+  opacity: 0;
+  transition: opacity var(--dur-std) var(--ease-out);
+}
+
+/* ---------- 筛选栏的"已吸住"状态 ----------
+   用户要求的手法是"滚动联动"：往下一翻工具条贴住顶栏，
+   它得**看起来**跟刚才不一样，否则读者分不清"这是页面的一块"
+   还是"这是浮在最上面的一条"。两处变化：底更实、影子更重 */
+.filter-bar.scrolled {
+  box-shadow: var(--glass-shadow-hover);
+}
+
+.filter-bar.scrolled::before {
+  opacity: 1;
 }
 
 /* 页签组：一排按钮，选中项高亮 */
@@ -602,7 +748,9 @@ function goDetail(hero) {
    而卡片背后是页面底色 + 三团大面积柔光斑（本来就是糊的），
    对着一片已经是渐变的背景再模糊一次，结果和没模糊基本一样。
    真正让卡片显"玻璃"的是半透明底 + 顶部内高光 + 柔和投影，这三样都还在。
-   所以这里只关模糊、保留其余玻璃质感；大面板（.panel/.banner）数量少，模糊照留 */
+   所以这里只关模糊、保留其余玻璃质感；
+   大面板（详情页/进阶页的 .panel）一页只有几个，模糊照留。
+   （横幅 .banner 从 2026-10-13 起是纯文字块，已经没有模糊了） */
 .hero-card,
 .recommend-card,
 .skeleton-card {
