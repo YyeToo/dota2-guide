@@ -199,6 +199,32 @@ class HeroApiIntegrationTest {
     }
 
     @Test
+    @DisplayName("路径没匹配到任何接口时返回 404，而不是 500")
+    void unknownPathIsNotFound() throws Exception {
+        // 守的是"把客户端错误报成服务端错误"这一类问题。
+        //
+        // 真实场景：浏览器直接打开 http://localhost:8080/api/heroess（多打一个 s），
+        // 或者只打开 http://localhost:8080/ 想看首页。后端这两种情况都没有对应接口，
+        // 但 Spring Boot 3 会把「没匹配到接口」的请求当成静态资源查找，找不到就抛
+        // NoResourceFoundException —— 它要是被兜底的 Exception 处理器接住，
+        // 就会变成 500「服务器内部错误」，让人以为是后端崩了，排查方向直接带偏。
+        //
+        // 地址写错是客户端的问题，就该回 404。
+        JsonNode wrongApi = getJson("/api/heroess");
+        assertEquals(404, wrongApi.path("code").asInt(),
+                "接口路径写错应该回 404，实际：" + wrongApi);
+    }
+
+    @Test
+    @DisplayName("后端根路径没有首页，返回 404")
+    void rootPathIsNotFound() throws Exception {
+        // 后端只提供 /api/**，首页在前端（vite 的 5173 端口）。
+        // 但"打开根路径看看"是最自然的一次尝试，这里也得是 404 而不是 500。
+        JsonNode root = getJson("/");
+        assertEquals(404, root.path("code").asInt(), "根路径应该回 404，实际：" + root);
+    }
+
+    @Test
     @DisplayName("数字 key 仍然按 id 解析（老书签 /heroes/3 还能用）")
     void detailByNumericKey() throws Exception {
         // 详情接口合并成一个 /api/heroes/{key} 之后，数字进来必须还走 id 分支 ——

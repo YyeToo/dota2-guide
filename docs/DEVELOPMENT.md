@@ -136,6 +136,33 @@ SET NAMES utf8mb4;
 
 ---
 
+## 后端报错排查
+
+### 访问任何不存在的路径，都回 500「服务器内部错误：No static resource xxx」
+
+**症状**：浏览器直接打开 `http://localhost:8080/`，或接口路径打错（`/api/heroess` 多一个 s），返回：
+
+```json
+{"code":500,"message":"服务器内部错误：No static resource .","data":null}
+```
+
+**原因**：Spring Boot 3 找不到匹配的接口时，会把请求**当成静态资源**去查找（它以为你要找个首页 HTML），查不到就抛 `NoResourceFoundException`。这个异常原本掉进了 `GlobalExceptionHandler` 里的 `Exception` 兜底，于是被报成 500 —— 一个「你地址写错了」的客户端问题，被报成了「后端崩了」的服务端问题，排查方向从一开始就被带偏。
+
+**现在**：`GlobalExceptionHandler` 里为 `NoResourceFoundException` 单独写了处理器，返回 404 并回显实际访问的地址：
+
+```json
+{"code":404,"message":"接口不存在：/api/heroess","data":null}
+```
+
+**两点别改错**：
+
+1. **HTTP 状态码仍然是 200**，业务码在 JSON 的 `code` 字段里。这是项目的既有约定（见 `common/Result.java`，前端 `api/hero.js` 的拦截器靠 `code` 判成功失败），不要改成真的 HTTP 404，否则前端那套解析逻辑要跟着重写。
+2. 这个处理器用 `log.warn` 且**不打堆栈** —— 404 是正常现象不是故障，打堆栈只会把控制台刷满、淹掉真正的错误。
+
+**可推广的教训**：`@ExceptionHandler(Exception.class)` 兜底只能兜真正的服务端故障，它会顺手把客户端问题也吃掉。所以越具体的异常越要单独写处理器（Spring 会在多个处理器里选最具体的那一个），让兜底只兜兜不住的。
+
+---
+
 ## 各阶段功能清单
 
 **第一阶段（英雄图鉴 MVP）**
