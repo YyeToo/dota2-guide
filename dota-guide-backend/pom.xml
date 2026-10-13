@@ -58,6 +58,17 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
+
+        <!-- 4. 测试起步依赖：JUnit 5 + Spring Test + AssertJ + MockMvc。
+             scope=test 表示只在跑测试时参与，打包出来的 jar 里不含它。
+             版本号同样由父工程管理。
+             它搭起 HeroApiIntegrationTest 的架子：启动真实 Spring 容器、
+             连真实数据库、通过 HTTP 接口断言数据。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

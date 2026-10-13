@@ -1,0 +1,21 @@
+# ============================================================
+# 换行符统一
+#
+# 背景：本机 git 配置了 core.autocrlf=true，检出时会把文本文件的 LF 换成 CRLF。
+# 两处会因此出问题：
+#
+#   1. sql/gen_official.js 写出的是 LF，而 golden 测试（sql/test/）要逐字节
+#      对比生成结果 —— 检出后若变 CRLF，对比必然失败。
+#   2. update_all.sh 是 bash 脚本，CRLF 会让 Git Bash 报
+#      "$'\r': command not found"。
+#
+#   3. sql/test/fixtures/our_heroes.tsv 是 golden 测试的输入，
+#      要跟生成结果一起逐字节对比，同样不希望换行符随平台变。
+#
+# 注：sql/ 下所有文件目前在索引和工作区里都已经是 LF，
+#     所以加上这几行不会产生任何内容变更。
+# ============================================================
+
+*.sql text eol=lf
+*.sh  text eol=lf
+*.tsv text eol=lf
