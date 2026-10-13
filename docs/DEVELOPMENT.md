@@ -189,9 +189,11 @@ SET NAMES utf8mb4;
 
 ---
 
-## 内部重构（无用户可见变化）
+## 内部重构（基本无用户可见变化）
 
 这几项不改功能、不改数据，但改动面大，单独记在这里，方便日后 `git log` 对不上时回查。
+唯一一处例外是「前端：值到界面的映射」那一节里顺带修掉的「重试」按钮 ——
+它本来就是错的（点重试走的是追加模式），修好之后行为变了，但那是修 bug，不是改功能。
 
 ### 生成器拆分 + 测试安全网
 
@@ -306,3 +308,108 @@ golden 逐字节对比 + 后端连真实数据库的集成测试。它们守的�
 跑旧的 `ORDER BY`，`xm01_v7test_new` 用新结构 + 新 SQL 文件跑 `ORDER BY sort_order`，
 795 行逐行对比。除了有意去掉的 `先天·` 前缀，两边完全一致，
 四个"F 排在 D 前"的英雄两边都是 D 在前。
+
+### 前端：值到界面的映射收进 domain/，列表查询状态收进 composable
+
+两个独立的问题，一次改完 —— 它们都在"同一个决定散落在很多个调用点"这一类里。
+
+#### 一、`src/domain/`：值 → 界面
+
+改之前，主属性的颜色在三个文件里各写了一遍，而且是四套不同的命名：
+
+```js
+// HomeView.vue / HeroDetailView.vue / assets/main.css
+:class="'attr-' + hero.attr"      // 徽章
+:class="'stripe-' + hero.attr"    // 卡片竖条 / 横幅
+:class="'attr-btn-' + a"          // 筛选页签
+:class="'attr-text-' + hero.attr" // 速览数值
+```
+
+四个模板拼字符串 + 四份 CSS 规则（`.attr-力量` 那一份还在两个 `.vue` 的
+`<style scoped>` 里逐字重复 —— scoped 样式互相看不见，只能复制）。
+
+**这条 interface 是隐式的**：数据库里多一个主属性值，模板照常拼出一个类名，
+CSS 里没有对应规则，页面**静默降级成没有颜色**。不报错、不警告、不留痕。
+
+现在：
+
+- `src/domain/vocab.js` —— 值 → 标识（`attrToken` / `categoryBadge` / `skillBarClass`）
+- `src/domain/skill.js` —— 技能的是非题（`isUpgradeSkill` / `isInnate`）
+- `src/domain/hero.js` —— 英雄字段的展示换算（`splitRoles` / `complexityStars` / `posFillPercent`）
+- `src/domain/focus.js` —— 进阶页"该点亮哪一条"的判定（`pickFocusKey`）
+- `assets/main.css` 里只剩一份映射：
+
+  ```css
+  [data-token='str'] { --attr: var(--str); --attr-tint: var(--str-tint); --attr-glow: var(--str-glow); }
+  [data-token='unknown'] { --attr: var(--muted); … }   /* 兜底，见下 */
+  ```
+
+模板改成挂 `data-token`，**颜色定义只剩一处，形状各管各的** ——
+色条还是色条（3px 贴左边）、徽章还是徽章（4px 圆角小方块）、页签还是页签（实底填充）。
+不是把所有东西拉平成一套样式。
+
+每个查表函数都有**显式的兜底分支**，未知值走 `unknown`，CSS 里也有一条规则接着它。
+于是"数据变了界面怎么表现"从"读不出来、也测不出来"变成一处能读、能测的决定。
+
+#### 二、`src/composables/useHeroQuery.js`：把页码关起来
+
+改之前 `page` 是 `HomeView` 里的一个 ref，**7 个调用点各自负责在查询前把它处理好**：
+4 处手写 `page.value = 1`，1 处 `page.value += 1`，还有 2 处什么都没写。
+这不是 interface，是口口相传的规矩 —— 漏一处就出现「筛选变了却追加第 N 页」，
+列表静默重复或缺行，接口照样返回 200。
+
+已经真的踩到过一次，就是「重试」按钮：
+
+```html
+<button @click="loadHeroes">重试</button>   <!-- loadHeroes(append = false) -->
+```
+
+Vue 对裸方法引用会把 `$event` 当第一个实参传进去，而 `loadHeroes(append)` 判的是真假 ——
+MouseEvent 是 truthy，于是"重试"实际走的是**追加**模式：不显示骨架屏，
+还把结果拼到旧列表尾部。首次加载失败时列表是空的，追加等于正常加载，所以谁都没发现；
+只有"已经有数据了、然后某次筛选请求失败"才现形。
+
+现在 `page` 只被三个方法写，调用方拿不到能破坏不变量的句柄：
+
+| 方法 | 作用 |
+|---|---|
+| `search()` | 回第 1 页重新查（首次加载 / 筛选变化 / 重试都走它，不另外造 `retry()`） |
+| `loadMore()` | 页码 +1，结果追加到列表尾部 |
+| `setFilter(name, value)` | 改一个筛选条件，内部就是"改完再 `search()`" |
+| `reset()` | 清空全部筛选条件，内部也是 `search()` |
+
+两个决定留在视图里没塞进 composable：**"再点一次选中的页签 = 取消筛选"**
+（那是界面手势，不是查询状态的职责），以及模板里 `v-model` 直接绑 `filters`。
+
+`useHeroQuery` 是**直接 import** `getHeroList` 的，没做成参数注入。
+判据是 codebase-design 那条：**一个 adapter 是假缝，两个才是真缝** ——
+全站只有这一个真实实现，没有东西会跨这道缝变化，注入进来只是为想象中的测试留口子。
+
+#### 三、`node --test` 只测纯函数
+
+新增 `test/`（36 条）和 `npm test`，**不引入 vitest / @vue/test-utils / jsdom**。
+能被纯函数表达的部分已经都在 `src/domain/` 里了；剩下的（ref 接线、模板结构、
+CSS 继承）用这套工具也测不出什么，那部分靠 [README 的端到端验收](../README.md#端到端验收)。
+
+**验证方式**：除了 36 条测试全过，还对四条**最诱人的错误写法**各做了一次变异测试，
+确认测试真的会红（不是恒真）：
+
+| 变异 | 被哪条测试抓住 |
+|---|---|
+| `attrToken` 兜底返回原值（而不是 `unknown`） | 2 条 |
+| `skillBarClass` 把 Q/W/E 合并进 `unknown`（会凭空多出灰条） | 2 条 |
+| `isUpgradeSkill` 把"新增"也当成"强化" | 1 条 |
+| `pickFocusKey` 去掉纵向过滤（滚过去的条目霸占焦点） | 3 条 |
+
+端到端那一层用 headless Chrome + CDP 在真实浏览器里读 `getComputedStyle`，
+三个页面 70 项断言全过。这层抓到的**唯一一个真 bug** 在详情页：
+
+`data-token` 一开始挂在 `.hero-header` 上，但要用主属性色的还有右栏
+「属性速览」里那个主属性值 —— 右栏是横幅的**兄弟节点**，不是后代，
+`--attr` 传不过去，`color: var(--attr)` 整条静默作废，那个值渲染成了默认文字色。
+在浏览器里把属性挪回横幅可以直接复现（`rgb(230, 232, 238)` → 挪回来是 `rgb(229, 87, 74)`）。
+修法是把 `data-token` 提到两者的共同祖先 `.detail-body` 上。
+
+> 📌 这是本批次唯一一个 `node --test` 结构性测不到的问题，也是把
+> 「端到端验收」写进 README 的原因。**颜色有没有生效不报错**，只能看。
+
