@@ -132,7 +132,10 @@
             <result property="heroId" column="skill_hero_id"/>
             <result property="skillKey" column="skill_key"/>
             <result property="skillType" column="skill_type"/>
-            <result property="skillSource" column="skill_source"/>
+            <!-- 分类事实：数据库里已经算好了，这里只是搬运，不要在 Java 里重新推导 -->
+            <result property="skillCategory" column="skill_category"/>
+            <result property="isInnate" column="is_innate"/>
+            <result property="sortOrder" column="sort_order"/>
             <result property="skillName" column="skill_name"/>
             <result property="skillDesc" column="skill_desc"/>
         </collection>
@@ -205,21 +208,27 @@
       jdbcType=BIGINT 是给 null 值补一个类型说明：
       部分 JDBC 驱动在参数为 null 且不指定类型时会报错，写上更保险。
 
-      ⚠️ ORDER BY 和改动前逐字一致 —— 它决定了详情页技能的显示顺序
-      （先按 Q→W→E→R→D→F 排有按键的技能，然后是无按键的"强化类"按 id 排，
-      即魔晶在前、神杖在后）。这是验收要求之一，不能顺手"优化"。
-      (s.skill_key = '') 是布尔比较，MySQL 返回 0/1，ASC 让 0（有按键）排前面。
-      FIELD() 返回第一个参数在后续列表中的位置序号。
+      ⚠️ ORDER BY 现在只剩 s.sort_order 一列。
+      以前这里是 `(s.skill_key='') ASC, FIELD(s.skill_key,...), s.id` 三级的 ——
+      它决定详情页技能的显示顺序（先按 Q→W→E→R→D→F 排有按键的技能，
+      然后是无按键的"强化类"，魔晶在前、神杖在后）。
+      那套规则现在**物化**成了 sort_order 列，由生成器算好写进数据库
+      （见 sql/lib/skills.js 的 compareSkills），这里直接读就行。
+
+      为什么值得把 SQL 里的排序挪走：那三级排序里有「按 id 兜底」这层隐含依赖，
+      意思是顺序还取决于行的插入次序 —— 从 SQL 本身完全看不出来。
+      现在 hero_skill 上有 UNIQUE KEY (hero_id, sort_order)，顺序是数据的一部分，
+      写错了导入就失败，而不是让接口静默返回一个乱序的技能列表。
     -->
     <select id="findByKey" resultMap="heroDetailMap">
         SELECT <include refid="heroColumns"><property name="alias" value="h."/></include>,
         s.id AS skill_id, s.hero_id AS skill_hero_id, s.skill_key, s.skill_type,
-        s.skill_source, s.skill_name, s.skill_desc
+        s.skill_category, s.is_innate, s.sort_order, s.skill_name, s.skill_desc
         FROM hero h
         LEFT JOIN hero_skill s ON h.id = s.hero_id
         WHERE h.slug = #{key}
         OR h.id = #{numericKey,jdbcType=BIGINT}
-        ORDER BY (s.skill_key = '') ASC, FIELD(s.skill_key, 'Q', 'W', 'E', 'R', 'D', 'F'), s.id
+        ORDER BY s.sort_order
     </select>
 
 </mapper>

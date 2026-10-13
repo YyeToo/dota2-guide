@@ -189,17 +189,27 @@ npm run dev
     "attr": "力量", "attack": "近战", "complexity": 1, "avatar": "https://.../axe.png",
     "intro": "...", "tips": "...", "items": "先锋盾、闪烁匕首", "counters": "怕远程消耗型英雄...",
     "skills": [
-      { "id": 1, "skillKey": "Q", "skillType": "主动", "skillSource": "基础", "skillName": "狂战士之吼", "skillDesc": "..." },
-      { "id": 5, "skillKey": "", "skillType": "被动", "skillSource": "魔晶", "skillName": "反击螺旋·魔晶强化", "skillDesc": "..." }
+      { "id": 1, "skillKey": "Q", "skillType": "主动", "skillCategory": "基础", "isInnate": 0, "sortOrder": 1, "skillName": "狂战士之吼", "skillDesc": "..." },
+      { "id": 5, "skillKey": "", "skillType": "被动", "skillCategory": "魔晶强化", "isInnate": 0, "sortOrder": 5, "skillName": "反击螺旋·魔晶强化", "skillDesc": "..." }
     ]
   }
 }
 ```
 
-> 💡 技能按 Q→W→E→R→D→F 排序，无按键的"强化类"排最后。
-> `skillType` = 主动/被动（被动自动生效无需按键）；`skillSource` = 基础/魔晶/神杖；
-> **`skillKey` 为空 = 魔晶/神杖只强化已有技能（不占新按键）**，D/F 只出现在新增技能上
-> （127 英雄共 69 条：D 键 37 条、F 键 32 条）。
+技能字段一览：
+
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `skillKey` | `Q`/`W`/`E`/`R`/`D`/`F` 或空串 | 按键。**空串 = 魔晶/神杖只强化已有技能，不占新按键**，D/F 只出现在新增技能上（127 英雄共 69 条：D 键 37 条、F 键 32 条） |
+| `skillType` | 主动 / 被动 | 被动自动生效、无需按键 |
+| `skillCategory` | 基础 / 魔晶新增 / 神杖新增 / 魔晶强化 / 神杖强化 | 这个技能的来源，以及它是"多给一个技能位"还是"强化已有技能" |
+| `isInnate` | 1 / 0 | 先天技能（出生自带、随等级自动升级，如剑圣的剑舞）。全库 18 条 |
+| `sortOrder` | 1..n | 本行在该英雄技能列表里的位次，**每个英雄都是 1..n 连续**（库里靠 `UNIQUE KEY (hero_id, sort_order)` 兜底） |
+
+> 💡 **顺序不用前端算。** 接口按 `sortOrder` 返回，就是页面该显示的顺序
+> （Q→W→E→R→D→F，无按键的"强化类"排最后，魔晶在神杖前）——这个顺序由生成器算好
+> 写进了数据库，`HeroMapper.xml` 里只剩 `ORDER BY s.sort_order` 一句。
+> 前端也不必再从名字前缀或空按键去反推分类，直接读 `skillCategory` / `isInnate` 即可。
 
 404 示例：`{ "code": 404, "message": "英雄不存在（sven）", "data": null }`
 
@@ -251,11 +261,11 @@ bash sql/update_all.sh
 ## 跑测试
 
 ```bash
-# 生成器测试（63 条，不需要数据库、不需要官网原始数据）
+# 生成器测试（71 条，不需要数据库、不需要官网原始数据）
 cd sql
 node --test
 
-# 后端集成测试（10 条，需要 MySQL 在跑、dota_guide 库有数据）
+# 后端集成测试（11 条，需要 MySQL 在跑、dota_guide 库有数据）
 cd dota-guide-backend
 ./mvnw test
 ```
@@ -270,7 +280,8 @@ cd dota-guide-backend
 
 后端集成测试连真实数据库、走完整 HTTP 链路（MockMvc → Controller → Service → Mapper），
 断言的是「SQL 文件、表结构、代码三者是否一致」这类编译期发现不了的问题 ——
-比如 127 个英雄的 slug 是否唯一非空、每个英雄是否都挂得上技能、中文有没有乱码。
+比如 127 个英雄的 slug 是否唯一非空、每个英雄是否都挂得上技能、中文有没有乱码、
+每个英雄的 `sortOrder` 是不是 1..n 连续。
 它是**只读**的，对着生产库跑也安全。
 
 ## 常见命令速查

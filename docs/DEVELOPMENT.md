@@ -67,6 +67,23 @@
 > 💡 执行完重启后端，即可在详情接口 `GET /api/heroes/{key}` 里用 slug 查询（如 `/api/heroes/sven`）。
 > （第六阶段是纯前端 UI 改造，没有数据库变更，所以从第五阶段直接跳到第七阶段。）
 
+### 已有第七阶段数据库（升级到第十一阶段：技能分类/先天/位次物化）
+
+执行 2 个脚本，**顺序不能反**：
+
+1. [sql/upgrade_v7.sql](../sql/upgrade_v7.sql) —— `hero_skill` 表换列：删 `skill_source`，
+   加 `skill_category` / `is_innate` / `sort_order`，加 `UNIQUE KEY (hero_id, sort_order)`。
+   这个脚本会 `TRUNCATE TABLE hero_skill`（见文件头的说明），所以第 2 步必须紧接着跑。
+2. [sql/skills_full.sql](../sql/skills_full.sql) —— 重新导入技能数据（795 行，带新的三列）
+
+> 💡 `hero` 表**不动**（教学数据号位/装备/克制/打法建议全在里面），所以这个升级只碰技能表。
+> 执行完重启后端。
+>
+> ⚠️ 顺序反了会怎样：`upgrade_v7.sql` 先跑 = 表空了但结构新，`skills_full.sql` 填回来，正常。
+> 但要是先跑 `skills_full.sql`，它的 INSERT 列清单里有 `skill_category` 这类还不存在的列，
+> 而文件开头有 `TRUNCATE TABLE hero_skill` —— **表会被清空然后导入失败**，技能数据全丢。
+> 升级前先 `mysqldump dota_guide > backup.sql` 是个好习惯。
+
 ---
 
 ## 阶段报错排查
@@ -78,6 +95,7 @@
 | `Unknown column 'items'`，或 `hero_skill doesn't exist` | 第一阶段 | 执行 upgrade_v2.sql → heroes_full.sql → skills_full.sql |
 | `Unknown column 'skill_type'` | 第二阶段 | 执行 upgrade_v3.sql → skills_full.sql |
 | `Unknown column 'attr'`（或 pos / attack / complexity / avatar） | 第三阶段 | 执行 upgrade_v4.sql → heroes_full.sql → skills_full.sql |
+| `Unknown column 'skill_category'`（或 is_innate / sort_order） | 第七阶段 | 执行 upgrade_v7.sql → skills_full.sql（**顺序不能反**，见上一节） |
 
 ---
 
@@ -205,3 +223,51 @@ golden 逐字节对比 + 后端连真实数据库的集成测试。它们守的�
 12 个完全一致（含全部带技能的详情 payload，证明技能顺序和内容没变）。
 两处不同都是有意为之：404 的提示文案（原来会写 `id=` / `slug=`，合并后只能写 key），
 以及上面说的 `size` 上限。
+
+### 技能分类事实物化进 hero_skill
+
+**改了什么**
+
+技能行上的三件事以前是**算出来的**，现在变成了数据库里的列：
+
+| 以前怎么得到的 | 现在 |
+|---|---|
+| `skill_source`（基础/魔晶/神杖）+ 按键空不空 → 前端自己拼出"是哪一类" | 一个 `skill_category` 列：基础 / 魔晶新增 / 神杖新增 / 魔晶强化 / 神杖强化 |
+| 技能名开头的 `先天·` 前缀 → 前端 `startsWith` 判断是不是先天技能 | `is_innate` 列，技能名恢复成干净的官网原名 |
+| `ORDER BY (skill_key='') ASC, FIELD(skill_key,'Q','W','E','R','D','F'), id` | `sort_order` 列（每个英雄 1..n 连续），`ORDER BY s.sort_order` 一句 |
+
+**为什么**
+
+三个理由，一个比一个实在：
+
+1. **`skill_source` 信息量不够。** 它只回答"哪来的"，回答不了"是新增了一个技能位还是强化了
+   已有技能"—— 而后者才是前端要的东西（决定这张卡放哪个面板、标不标按键）。
+   前端只好拿"按键是不是空字符串"去反推，但"按键为空"只是强化类的**副作用**，不是它的定义。
+2. **名字前缀是往数据里掺私货。** `先天·反击螺旋` 这种名字不是官网原名，
+   搜不到、也不好跟官网对照；标记一件事该用列，不该改名字。
+3. **排序规则藏在 SQL 里。** 那三级排序的最后一层是 `s.id` 兜底，意思是顺序**还取决于行的插入次序** ——
+   这一点从 SQL 本身完全看不出来。
+
+顺带把一个**潜伏的坑**堵掉了：物化时如果图省事，直接把"生成器 push 行的次序"当 `sort_order`，
+宙斯、发条技师、食人魔魔法师、森海飞霞这四个英雄的 D/F 会悄悄反过来 ——
+官网 JSON 里它们的神杖技能排在魔晶技能前面，而排序规则要求 D 在 F 前。
+正确的做法是按**原排序规则的比较器**（现在是 `lib/skills.js` 的 `compareSkills`）
+稳定排序之后再编号，`lib.test.js` 里有一条专测这个的回归用例。
+
+**踩到的坑**
+
+- **MySQL 5.7 没有窗口函数。** `ROW_NUMBER() OVER (...)` 会直接报 ERROR 1064，
+  所以 `upgrade_v7.sql` 没法用窗口函数回填 `sort_order`，改成"清空表 + 紧接着重新导入"
+  （`hero_skill` 100% 是可再生的官网数据，没有手工内容）。
+- **`--default-character-set` 靠不住。** 本机 MySQL 26.7 的客户端**不认**这个命令行参数，
+  传 `utf8mb4` 也没用；真正生效的是脚本里那句 `SET NAMES utf8mb4`。
+  症状是 `COMMENT` / 列的默认值里出现 `ä¸»åŠ¨` 这种乱码（正是"主动"两字被按
+  latin1 重新解释的结果），而且只在**执行脚本时**发生 —— 表建好之后看不出来。
+  所以 `sql/*.sql` 每个文件都自带 `SET NAMES utf8mb4`，`update_all.sh` 的命令行参数
+  也一并从 `utf8` 改成 `utf8mb4`（双保险）。
+
+**验证方式**：物化后的顺序没有靠"用 JS 再算一遍"来验证（那等于拿被测逻辑考自己）。
+做法是建两个临时库，让 **MySQL 自己**产出两种排序：`xm01_v7test` 用旧结构 + 旧 SQL 文件
+跑旧的 `ORDER BY`，`xm01_v7test_new` 用新结构 + 新 SQL 文件跑 `ORDER BY sort_order`，
+795 行逐行对比。除了有意去掉的 `先天·` 前缀，两边完全一致，
+四个"F 排在 D 前"的英雄两边都是 D 在前。
