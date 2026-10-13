@@ -54,14 +54,18 @@ export function getHeroList(params = {}) {
 
 /**
  * 获取英雄详情（含技能列表）
- * 参数是数字 id → GET /api/heroes/{id}（如 /heroes/18）
- * 参数是 slug（英文内部名）→ GET /api/heroes/slug/{slug}（如 /heroes/sven）
- * 新手须知等教学页的链接用的是 slug（hero 表唯一标识列），
- * 数字 id 是数据库内部实现，slug 稳定可读，数据重灌也不会变
+ *
+ * 参数 key 既可以是数字 id 也可以是 slug（英文内部名），都是同一个地址：
+ *   getHeroDetail(18)   → GET /api/heroes/18
+ *   getHeroDetail('sven') → GET /api/heroes/sven
+ *
+ * 后端自己判断 key 是 id 还是 slug，前端不用管。
+ *
+ * 以前这里有段正则 if (/^\d+$/) 来决定请求 /heroes/{id} 还是 /heroes/slug/{slug} ——
+ * 那是把"这个英雄怎么定位"这条规则复制到了前端，后端一改、前端就得跟着改，
+ * 两边还容易对不齐（比如前端的正则认为 "007" 是 id，后端按字符串比却查不到）。
+ * 现在规则只留在后端一处。
  */
-export function getHeroDetail(idOrSlug) {
-  if (/^\d+$/.test(String(idOrSlug))) {
-    return request.get(`/heroes/${idOrSlug}`)
-  }
-  return request.get(`/heroes/slug/${idOrSlug}`)
+export function getHeroDetail(key) {
+  return request.get(`/heroes/${key}`)
 }
