@@ -9,9 +9,13 @@
 #   2. update_all.sh 是 bash 脚本，CRLF 会让 Git Bash 报
 #      "$'\r': command not found"。
 #
+#   3. sql/test/fixtures/our_heroes.tsv 是 golden 测试的输入，
+#      要跟生成结果一起逐字节对比，同样不希望换行符随平台变。
+#
 # 注：sql/ 下所有文件目前在索引和工作区里都已经是 LF，
-#     所以加上这两行不会产生任何内容变更。
+#     所以加上这几行不会产生任何内容变更。
 # ============================================================
 
 *.sql text eol=lf
 *.sh  text eol=lf
+*.tsv text eol=lf
