@@ -2,7 +2,7 @@
   英雄图鉴（路由 /heroes）—— 第四阶段对齐 dota2.com 官网 + 本阶段体验优化
   数据流：筛选/加载更多 → 调用后端 GET /api/heroes?page=&size=&keyword=&role=&pos=&attr=&complexity=
           → 渲染推荐区 + 卡片网格 + "加载更多"按钮
-  交互：点击卡片 → 跳转详情页 /heroes/:id
+  交互：点击卡片 → 跳转详情页 /heroes/:key（用 slug，如 /heroes/sven）
   本阶段（2026-10-06）改动：
     1. 顶部新增"新手推荐英雄"区：复杂度=简单的前 8 个（独立请求，不受筛选影响）
     2. 主属性页签选中色 = 卡片徽章色（力量红/敏捷绿/智力蓝/全才紫），选中态实底填充
@@ -188,8 +188,11 @@ function resetFilters() {
 
 // 点击卡片 → 跳转到详情页
 function goDetail(hero) {
-  // 编程式导航：等价于用户点击 <router-link to="/heroes/1">
-  router.push(`/heroes/${hero.id}`)
+  // 编程式导航：等价于用户点击 <router-link to="/heroes/sven">
+  // 用 slug 而不是 id —— 它是英雄的英文内部名，全表唯一且稳定，
+  // 数据重灌（update_all.sh 会按官网顺序重新编号 id）之后链接依然有效。
+  // 新手须知页的「代表英雄」表格也是用 slug，两处保持一致。
+  router.push(`/heroes/${hero.slug}`)
 }
 </script>
 
