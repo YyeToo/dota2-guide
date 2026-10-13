@@ -14,6 +14,23 @@
 //   官网数组顺序 ≠ 按键顺序。BASE_OVERRIDES 记录了按键对不上的英雄（巨魔战将），
 //   它是唯一的例外来源，写错技能名会进复核清单而不是静默降级。
 //
+// ------------------------------------------------------------------
+// 每行还要带上三个「分类事实」列（第十一阶段物化，前端不再解析名字）
+// ------------------------------------------------------------------
+//   category  五选一：基础 / 魔晶新增 / 神杖新增 / 魔晶强化 / 神杖强化
+//             它蕴含了旧的 source（基础/魔晶/神杖），且能区分「新增」和「强化」
+//   innate    这行是不是先天技能（0/1）
+//   sortOrder 本行在这个英雄技能列表里的位次，从 1 开始
+//
+// ⚠️ sortOrder **不等于**行的推入顺序，必须排一遍。原因是历史遗留：
+//   推入顺序永远是「基础 → D/F 新增 → 空 key 强化」，而游戏里 D 排在 F 前面，
+//   于是官网数组里 F 先出现时（宙斯、发条技师、食人魔魔法师、森海飞霞），
+//   推入顺序是 …F,D… 而展示顺序是 …D,F…。
+//   以前这个差异由后端一句 `ORDER BY FIELD(skill_key,'Q','W','E','R','D','F')` 兜着，
+//   现在物化成列，比较器就搬到了这里（compareSkills）。
+//   另外米波、电炎绝手各有两个 F，同按键的先后靠「推入顺序」定 —— 那是唯一
+//   真正的 tie-break，所以 compareSkills 最后要拿 seq 比。
+//
 // 不碰文件系统，输入由调用方读好传进来。
 // ============================================================
 
@@ -30,6 +47,34 @@ function grantedBy(a) {
   if (a.ability_is_granted_by_shard) return 'shard';
   if (a.ability_is_granted_by_scepter) return 'scepter';
   return null;
+}
+
+/**
+ * 技能按键的展示顺序。这是游戏里的按键从左到右的顺序，
+ * 也是原来后端那句 `ORDER BY FIELD(skill_key, ...)` 里的列表 —— 两边必须一致。
+ */
+const KEY_ORDER = ['Q', 'W', 'E', 'R', 'D', 'F'];
+
+/**
+ * 一个英雄内部，两行技能谁排前面。
+ *
+ * 三级判据，和原来的 SQL `ORDER BY (skill_key='') ASC, FIELD(...) ASC, id ASC` 一一对应：
+ *   1. 空 key（魔晶/神杖强化行）排在所有带按键的技能之后
+ *   2. 带按键的按 Q < W < E < R < D < F
+ *   3. 同按键的按推入顺序（米波、电炎绝手各有两个 F，只有这条能分先后）
+ *
+ * 第 3 条用显式的 seq 而不是依赖 Array.prototype.sort 的稳定性：
+ * 稳定性是规范保证的，但「推入顺序」本身是隐含的，写出来才能一眼看出改动的后果。
+ */
+function compareSkills(a, b) {
+  const aEmpty = a.key === '' ? 1 : 0;
+  const bEmpty = b.key === '' ? 1 : 0;
+  if (aEmpty !== bEmpty) return aEmpty - bEmpty;
+
+  const byKey = KEY_ORDER.indexOf(a.key) - KEY_ORDER.indexOf(b.key);
+  if (byKey !== 0) return byKey;
+
+  return a.seq - b.seq;
 }
 
 /**
@@ -58,7 +103,8 @@ function pickBaseAbilities(abilities) {
  * @param {object[]} heroList       herolist.json 的 result.data.heroes
  * @param {Map}      heroDataByName 官方中文名 → 单英雄全量数据
  * @param {object[]} heroRows       buildHeroes 的产物（要用它的 id↔name 对应关系）
- * @returns {{ rows: object[], review: object }} rows: { heroId, key, type, source, name, desc, heroName }
+ * @returns {{ rows: object[], review: object }}
+ *          rows: { heroId, key, type, category, innate, sortOrder, name, desc, heroName }
  */
 function buildSkills({ heroList, heroDataByName, heroRows }) {
   const review = { baseNot4: [], overrideMiss: [], grantedBoth: [], longSkillName: [], droppedUpgrades: [], keptDroppedUpgrades: [], maxDescLen: 0, descLenHero: '' };
@@ -82,6 +128,13 @@ function buildSkills({ heroList, heroDataByName, heroRows }) {
     const heroId = idByName.get(d.name_loc);
     const abilities = d.abilities;
 
+    // 这个英雄的行先攒在这里，最后统一定顺序、编 sortOrder（见文件头说明）
+    const heroRows = [];
+    const push = (row) => {
+      row.seq = heroRows.length;   // 推入顺序：compareSkills 的最后一级判据
+      heroRows.push(row);
+    };
+
     // ---- 基础 4 技能 ----
     let base = pickBaseAbilities(abilities);
 
@@ -100,8 +153,9 @@ function buildSkills({ heroList, heroDataByName, heroRows }) {
 
     base.forEach((a, i) => {
       const desc = cleanText(a.desc_loc, a.special_values);
-      rows.push({
-        heroId, key: KEYS[i] || '', type: typeOf(a), source: '基础',
+      push({
+        heroId, key: KEYS[i] || '', type: typeOf(a), category: '基础',
+        innate: a.ability_is_innate ? 1 : 0,
         name: a.name_loc, desc, heroName: d.name_loc,
       });
       if (a.name_loc.length > 50) review.longSkillName.push(d.name_loc + '/' + a.name_loc);
@@ -115,17 +169,18 @@ function buildSkills({ heroList, heroDataByName, heroRows }) {
       // 异常：一个技能同时是魔晶和神杖新增（正常不会发生）
       if (a.ability_is_granted_by_shard && a.ability_is_granted_by_scepter) review.grantedBoth.push(d.name_loc + '/' + a.name_loc);
       const desc = cleanText(a.desc_loc, a.special_values);
-      rows.push({
+      push({
         heroId, key: g === 'shard' ? 'D' : 'F', type: typeOf(a),
-        source: g === 'shard' ? '魔晶' : '神杖',
+        category: g === 'shard' ? '魔晶新增' : '神杖新增',
+        innate: a.ability_is_innate ? 1 : 0,
         name: a.name_loc, desc, heroName: d.name_loc,
       });
       noteDesc(desc, d.name_loc + '/' + a.name_loc);
     }
 
     // ---- 魔晶/神杖「强化已有技能」：按键为空 '' ----
-    // 只给「页面上会展示的技能」生成强化行：
-    //   基础 4 技能 + 先天技能（先天技能官方也出神杖/魔晶强化，行名加「先天·」前缀说明来源）
+    // 只给「页面上会展示的技能」生成强化行：基础 4 技能 + 先天技能。
+    // 先天技能的强化行以前靠名字前缀「先天·」标记，现在靠 innate 列，名字是干净的官网原名。
     for (const a of abilities) {
       if (grantedBy(a)) continue; // 新增技能自身不再生成强化行（它俩不同时出现）
       const shown = baseNames.has(a.name_loc) || a.ability_is_innate;
@@ -140,15 +195,15 @@ function buildSkills({ heroList, heroDataByName, heroRows }) {
         }
         review.keptDroppedUpgrades.push(d.name_loc + '/' + a.name_loc);
       }
-      const prefix = a.ability_is_innate ? '先天·' : '';
 
       if (a.ability_has_shard && a.shard_loc) {
         // applyManual：先处理「死占位符」改写，再做常规清洗（见 REPLACE_MANUAL 注释）
         // 第 3 个参数 'shard'：数值优先从 values_shard 取（魔晶加成值，见 findValue 注释）
         const desc = cleanText(applyManual(d.name_loc, a.name_loc, '魔晶', a.shard_loc), a.special_values, 'shard');
-        rows.push({
-          heroId, key: '', type: typeOf(a), source: '魔晶',
-          name: prefix + a.name_loc + '·魔晶强化', desc, heroName: d.name_loc,
+        push({
+          heroId, key: '', type: typeOf(a), category: '魔晶强化',
+          innate: a.ability_is_innate ? 1 : 0,
+          name: a.name_loc + '·魔晶强化', desc, heroName: d.name_loc,
         });
         noteDesc(desc, d.name_loc + '/' + a.name_loc + '(魔晶)');
       }
@@ -156,13 +211,22 @@ function buildSkills({ heroList, heroDataByName, heroRows }) {
       if (a.ability_has_scepter && a.scepter_loc) {
         // 'scepter'：数值优先从 values_scepter 取（神杖加成值）
         const desc = cleanText(applyManual(d.name_loc, a.name_loc, '神杖', a.scepter_loc), a.special_values, 'scepter');
-        rows.push({
-          heroId, key: '', type: typeOf(a), source: '神杖',
-          name: prefix + a.name_loc + '·神杖强化', desc, heroName: d.name_loc,
+        push({
+          heroId, key: '', type: typeOf(a), category: '神杖强化',
+          innate: a.ability_is_innate ? 1 : 0,
+          name: a.name_loc + '·神杖强化', desc, heroName: d.name_loc,
         });
         noteDesc(desc, d.name_loc + '/' + a.name_loc + '(神杖)');
       }
     }
+
+    // ---- 收尾：按展示顺序排定，再编 sortOrder ----
+    heroRows.sort(compareSkills);
+    heroRows.forEach((r, i) => {
+      delete r.seq;             // 只是排序用的中间量，不进 SQL
+      r.sortOrder = i + 1;
+    });
+    rows.push(...heroRows);
   }
 
   return { rows, review };
@@ -204,4 +268,4 @@ function scanTokens({ heroList, heroDataByName }) {
   return { review };
 }
 
-module.exports = { buildSkills, scanTokens, typeOf, grantedBy, pickBaseAbilities };
+module.exports = { buildSkills, scanTokens, typeOf, grantedBy, pickBaseAbilities, compareSkills, KEY_ORDER };

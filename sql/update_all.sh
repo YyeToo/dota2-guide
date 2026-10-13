@@ -18,7 +18,10 @@
 #   - 改了数据库里的教学文案（tips/items/counters/pos）后，重新整合进 SQL 文件
 #
 # 注意：
-#   - 表结构不会变（第四阶段结构），后端无需重启，前端刷新即可看到新数据
+#   - 本脚本假设数据库已经是当前结构。老库请先按 docs/DEVELOPMENT.md 跑完
+#     upgrade_v7.sql（hero_skill 加 skill_category / is_innate / sort_order 三列），
+#     否则第 4 步导入时报 Unknown column
+#   - 表结构不变，后端无需重启，前端刷新即可看到新数据
 #   - 官网如果新增了英雄（>127），生成器会报"请先补齐数据！"——
 #     按提示在 lib/vocab.js 的 NEW_HERO_DATA 里补号位和教学文案即可
 #   - 生成规则都在 lib/ 下按阶段分文件，gen_official.js 只是命令行入口
@@ -40,7 +43,16 @@ DB_NAME=dota_guide
 
 # 找 mysql 客户端：优先用已验证的 5.7 版全路径（不在 PATH 里），
 # 找不到再退回 PATH 里的 mysql，最后试 26.7 版
-# ⚠️ 导入中文必须用 --default-character-set=utf8（26.7 客户端的 utf8mb4 参数有坑，会被静默当 latin1）
+#
+# ⚠️ 字符集：真正挡住乱码的是**每个 .sql 文件开头的 SET NAMES utf8mb4;**，不是这个参数。
+#    本机服务器 character_set_server=latin1（5.7 默认值），客户端不显式指定会话字符集
+#    就会用错，UTF-8 字节被按 latin1 重新解释 → DEFAULT/COMMENT 里出现 ä¸»åŠ¨ 这类乱码。
+#    实测两个客户端的会话字符集（@character_set_client）：
+#      MySQL Server 5.7/bin/mysql.exe   不带参数 → gbk      带 --default-character-set=utf8mb4 → utf8mb4 ✅
+#      MySQL Server 26.7/bin/mysql.exe  不带参数 → gbk      带 --default-character-set=utf8mb4 → latin1  ❌
+#    26.7 客户端把参数整个忽略了（不报错），静默退回服务器默认值。
+#    所以这里仍然传 --default-character-set=utf8mb4（对 5.7 有效，能兜住将来忘写 SET NAMES 的脚本），
+#    但它是**双保险**不是主力 —— 用 utf8mb4 而不是 utf8 是因为 utf8 是 3 字节的旧类型。
 MYSQL=""
 if [ -f "/c/Program Files/MySQL/MySQL Server 5.7/bin/mysql.exe" ]; then
   MYSQL="/c/Program Files/MySQL/MySQL Server 5.7/bin/mysql.exe"
@@ -71,7 +83,7 @@ node download_official.js
 # ============================================================
 echo ""
 echo "================ 第 2 步：导出数据库里的教学数据 ================"
-"$MYSQL" -u"$DB_USER" -p"$DB_PASS" --default-character-set=utf8 -N -B \
+"$MYSQL" -u"$DB_USER" -p"$DB_PASS" --default-character-set=utf8mb4 -N -B \
   -e "SELECT name, pos, tips, items, counters FROM $DB_NAME.hero" > "$TMPW/our_heroes.tsv"
 echo "✓ 已导出 $(wc -l < "$TMPW/our_heroes.tsv") 行到 $TMPW/our_heroes.tsv"
 
@@ -90,9 +102,9 @@ node gen_official.js \
 # ============================================================
 echo ""
 echo "================ 第 4 步：导入数据库 ================"
-"$MYSQL" -u"$DB_USER" -p"$DB_PASS" --default-character-set=utf8 < heroes_full.sql
+"$MYSQL" -u"$DB_USER" -p"$DB_PASS" --default-character-set=utf8mb4 < heroes_full.sql
 echo "✓ heroes_full.sql 导入完成"
-"$MYSQL" -u"$DB_USER" -p"$DB_PASS" --default-character-set=utf8 < skills_full.sql
+"$MYSQL" -u"$DB_USER" -p"$DB_PASS" --default-character-set=utf8mb4 < skills_full.sql
 echo "✓ skills_full.sql 导入完成"
 
 # ============================================================
@@ -100,13 +112,30 @@ echo "✓ skills_full.sql 导入完成"
 # ============================================================
 echo ""
 echo "================ 校验 ================"
-echo "英雄总数 / 技能总数 / 主属性分布 / 技能来源分布："
-"$MYSQL" -u"$DB_USER" -p"$DB_PASS" --default-character-set=utf8 -N -e "
+echo "英雄总数 / 技能总数 / 主属性分布 / 技能分类分布："
+"$MYSQL" -u"$DB_USER" -p"$DB_PASS" --default-character-set=utf8mb4 -N -e "
   SELECT CONCAT('英雄: ', COUNT(*)) FROM $DB_NAME.hero;
   SELECT CONCAT('技能: ', COUNT(*)) FROM $DB_NAME.hero_skill;
   SELECT CONCAT('主属性-', attr, ': ', COUNT(*)) FROM $DB_NAME.hero GROUP BY attr;
-  SELECT CONCAT('技能来源-', skill_source, ': ', COUNT(*)) FROM $DB_NAME.hero_skill GROUP BY skill_source;
+  SELECT CONCAT('技能分类-', skill_category, ': ', COUNT(*)) FROM $DB_NAME.hero_skill GROUP BY skill_category;
 "
+
+# sort_order 连续性检查：每个英雄的技能位次必须是 1..n 且不重号。
+# 以前没有这一条 —— 顺序错乱是完全静默的：接口照常返回 200，只是技能顺序不对，
+# 而"顺序不对"在人眼看着一堆技能卡时很难发现。
+BAD_ORDER=$("$MYSQL" -u"$DB_USER" -p"$DB_PASS" --default-character-set=utf8mb4 -N -B -e "
+  SELECT COUNT(*) FROM (
+    SELECT hero_id FROM $DB_NAME.hero_skill
+    GROUP BY hero_id
+    HAVING MIN(sort_order) <> 1 OR MAX(sort_order) <> COUNT(*)
+  ) AS bad;
+")
+if [ "$BAD_ORDER" != "0" ]; then
+  echo "✗ 有 $BAD_ORDER 个英雄的 sort_order 不连续（每个英雄应为 1..n）"
+  echo "  多半是生成器 lib/skills.js 的 compareSkills 或编号那一步被改坏了，别急着用这份数据"
+  exit 1
+fi
+echo "✓ sort_order 连续，每个英雄都是 1..n"
 echo ""
 echo "✓ 全部完成！"
 echo "  表结构没变，后端不用重启；浏览器刷新 http://localhost:5173 即可看到新数据"

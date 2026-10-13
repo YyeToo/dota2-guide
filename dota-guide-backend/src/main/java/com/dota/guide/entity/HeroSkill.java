@@ -25,10 +25,22 @@ public class HeroSkill {
     /** 技能类型：主动（需要按键施放）/ 被动（自动生效） */
     private String skillType;
 
-    /** 技能来源：基础 / 魔晶 / 神杖（阿哈利姆魔晶、阿哈利姆神杖可升级或新增技能） */
-    private String skillSource;
+    /**
+     * 技能分类：基础 / 魔晶新增 / 神杖新增 / 魔晶强化 / 神杖强化
+     *
+     * 这一列同时回答了「哪来的」（基础还是魔晶还是神杖）和「是新增还是纯强化」，
+     * 前端拿它直接决定技能卡怎么画，不用去猜。
+     * 它从数据库里读，不在 Java 里算 —— 见 sql/lib/skills.js 的物化说明。
+     */
+    private String skillCategory;
 
-    /** 技能名 */
+    /** 是否先天技能（出生自带、不占按键也不占技能位）。1 = 是，0 = 否 */
+    private Integer isInnate;
+
+    /** 本行在该英雄技能列表里的位次，每个英雄 1..n 连续；查询直接按它排序 */
+    private Integer sortOrder;
+
+    /** 技能名（官网中文名，强化行带 ·魔晶强化 / ·神杖强化 后缀） */
     private String skillName;
 
     /** 技能效果（新手向描述） */
@@ -68,12 +80,28 @@ public class HeroSkill {
         this.skillType = skillType;
     }
 
-    public String getSkillSource() {
-        return skillSource;
+    public String getSkillCategory() {
+        return skillCategory;
     }
 
-    public void setSkillSource(String skillSource) {
-        this.skillSource = skillSource;
+    public void setSkillCategory(String skillCategory) {
+        this.skillCategory = skillCategory;
+    }
+
+    public Integer getIsInnate() {
+        return isInnate;
+    }
+
+    public void setIsInnate(Integer isInnate) {
+        this.isInnate = isInnate;
+    }
+
+    public Integer getSortOrder() {
+        return sortOrder;
+    }
+
+    public void setSortOrder(Integer sortOrder) {
+        this.sortOrder = sortOrder;
     }
 
     public String getSkillName() {

@@ -8,8 +8,45 @@
 - 你的数据库是**早期版本**建立的，需要升级到当前结构
 - 你想了解项目各阶段分别做了什么
 - 你遇到了 `Unknown column` 这类**只有老数据库才会出现**的报错
+- 执行 `.sql` 脚本时中文变成了乱码（见下面的「环境坑」）
 
 **全新安装请直接看 [README 的快速开始](../README.md#快速开始)** —— 不需要本文档。
+
+---
+
+## 环境坑
+
+### 中文乱码：字符集三处说法曾经互斥，实测结论如下
+
+症状是**执行建表/升级脚本时**，列的 `DEFAULT` 值和 `COMMENT` 里的中文变成
+`ä¸»åŠ¨`（"主动"）、`åŸºç¡€`（"基础"）这种样子。行数据不受影响，
+所以不看 `SHOW CREATE TABLE` 很难发现。
+
+**根因（实测，不是推测）**：本机 MySQL 服务器的 `character_set_server` 是 **latin1**
+（5.7 的默认值，安装后没改过）。客户端如果没把会话字符集显式设成 utf8mb4，
+发过去的 UTF-8 字节就会被当成 latin1 重新解释，产出上面的乱码。
+
+而"显式设置"这件事，两个客户端表现不同 —— 本机同时装了两个 mysql.exe：
+
+| 客户端 | 不带参数 | 带 `--default-character-set=utf8mb4` |
+|---|---|---|
+| `MySQL Server 5.7/bin/mysql.exe` | `gbk`（按 Windows 区域设置猜的） | `utf8mb4` ✅ 参数生效 |
+| `MySQL Server 26.7/bin/mysql.exe` | `gbk` | **`latin1`** ❌ 参数被忽略，退回服务器默认值 |
+
+**所以 `--default-character-set` 不可靠** —— 参数被忽略时不会报错，只会静默用错字符集，
+而且 26.7 客户端在**传了这个参数**的情况下反而退到了 latin1。
+
+**固定做法**：`sql/*.sql` 每个文件都在最前面自带一句
+
+```sql
+SET NAMES utf8mb4;
+```
+
+写在文件里，就不依赖是哪个客户端、也不依赖命令行参数。`sql/update_all.sh` 的
+`--default-character-set` 也一并从 `utf8` 改成 `utf8mb4` —— 那是双保险，不是主力。
+
+> 📌 如果你新写一个 `.sql` 脚本，**第一行就写这句**（`USE` 之前）。
+> 历史上有一次乱码就是这么来的：`upgrade_v2.sql` 是唯一漏了这句的文件。
 
 ---
 
@@ -67,6 +104,23 @@
 > 💡 执行完重启后端，即可在详情接口 `GET /api/heroes/{key}` 里用 slug 查询（如 `/api/heroes/sven`）。
 > （第六阶段是纯前端 UI 改造，没有数据库变更，所以从第五阶段直接跳到第七阶段。）
 
+### 已有第七阶段数据库（升级到第十一阶段：技能分类/先天/位次物化）
+
+执行 2 个脚本，**顺序不能反**：
+
+1. [sql/upgrade_v7.sql](../sql/upgrade_v7.sql) —— `hero_skill` 表换列：删 `skill_source`，
+   加 `skill_category` / `is_innate` / `sort_order`，加 `UNIQUE KEY (hero_id, sort_order)`。
+   这个脚本会 `TRUNCATE TABLE hero_skill`（见文件头的说明），所以第 2 步必须紧接着跑。
+2. [sql/skills_full.sql](../sql/skills_full.sql) —— 重新导入技能数据（795 行，带新的三列）
+
+> 💡 `hero` 表**不动**（教学数据号位/装备/克制/打法建议全在里面），所以这个升级只碰技能表。
+> 执行完重启后端。
+>
+> ⚠️ 顺序反了会怎样：`upgrade_v7.sql` 先跑 = 表空了但结构新，`skills_full.sql` 填回来，正常。
+> 但要是先跑 `skills_full.sql`，它的 INSERT 列清单里有 `skill_category` 这类还不存在的列，
+> 而文件开头有 `TRUNCATE TABLE hero_skill` —— **表会被清空然后导入失败**，技能数据全丢。
+> 升级前先 `mysqldump dota_guide > backup.sql` 是个好习惯。
+
 ---
 
 ## 阶段报错排查
@@ -78,6 +132,7 @@
 | `Unknown column 'items'`，或 `hero_skill doesn't exist` | 第一阶段 | 执行 upgrade_v2.sql → heroes_full.sql → skills_full.sql |
 | `Unknown column 'skill_type'` | 第二阶段 | 执行 upgrade_v3.sql → skills_full.sql |
 | `Unknown column 'attr'`（或 pos / attack / complexity / avatar） | 第三阶段 | 执行 upgrade_v4.sql → heroes_full.sql → skills_full.sql |
+| `Unknown column 'skill_category'`（或 is_innate / sort_order） | 第七阶段 | 执行 upgrade_v7.sql → skills_full.sql（**顺序不能反**，见上一节） |
 
 ---
 
@@ -205,3 +260,49 @@ golden 逐字节对比 + 后端连真实数据库的集成测试。它们守的�
 12 个完全一致（含全部带技能的详情 payload，证明技能顺序和内容没变）。
 两处不同都是有意为之：404 的提示文案（原来会写 `id=` / `slug=`，合并后只能写 key），
 以及上面说的 `size` 上限。
+
+### 技能分类事实物化进 hero_skill
+
+**改了什么**
+
+技能行上的三件事以前是**算出来的**，现在变成了数据库里的列：
+
+| 以前怎么得到的 | 现在 |
+|---|---|
+| `skill_source`（基础/魔晶/神杖）+ 按键空不空 → 前端自己拼出"是哪一类" | 一个 `skill_category` 列：基础 / 魔晶新增 / 神杖新增 / 魔晶强化 / 神杖强化 |
+| 技能名开头的 `先天·` 前缀 → 前端 `startsWith` 判断是不是先天技能 | `is_innate` 列，技能名恢复成干净的官网原名 |
+| `ORDER BY (skill_key='') ASC, FIELD(skill_key,'Q','W','E','R','D','F'), id` | `sort_order` 列（每个英雄 1..n 连续），`ORDER BY s.sort_order` 一句 |
+
+**为什么**
+
+三个理由，一个比一个实在：
+
+1. **`skill_source` 信息量不够。** 它只回答"哪来的"，回答不了"是新增了一个技能位还是强化了
+   已有技能"—— 而后者才是前端要的东西（决定这张卡放哪个面板、标不标按键）。
+   前端只好拿"按键是不是空字符串"去反推，但"按键为空"只是强化类的**副作用**，不是它的定义。
+2. **名字前缀是往数据里掺私货。** `先天·反击螺旋` 这种名字不是官网原名，
+   搜不到、也不好跟官网对照；标记一件事该用列，不该改名字。
+3. **排序规则藏在 SQL 里。** 那三级排序的最后一层是 `s.id` 兜底，意思是顺序**还取决于行的插入次序** ——
+   这一点从 SQL 本身完全看不出来。
+
+顺带把一个**潜伏的坑**堵掉了：物化时如果图省事，直接把"生成器 push 行的次序"当 `sort_order`，
+宙斯、发条技师、食人魔魔法师、森海飞霞这四个英雄的 D/F 会悄悄反过来 ——
+官网 JSON 里它们的神杖技能排在魔晶技能前面，而排序规则要求 D 在 F 前。
+正确的做法是按**原排序规则的比较器**（现在是 `lib/skills.js` 的 `compareSkills`）
+稳定排序之后再编号，`lib.test.js` 里有一条专测这个的回归用例。
+
+**踩到的坑**
+
+- **MySQL 5.7 没有窗口函数。** `ROW_NUMBER() OVER (...)` 会直接报 ERROR 1064，
+  所以 `upgrade_v7.sql` 没法用窗口函数回填 `sort_order`，改成"清空表 + 紧接着重新导入"
+  （`hero_skill` 100% 是可再生的官网数据，没有手工内容）。
+- **字符集**：`hero_skill` 的 `DEFAULT` / `COMMENT` 里存着双重编码的乱码
+  （`ä¸»åŠ¨`），这次用 `upgrade_v7.sql` 里的 `MODIFY COLUMN` 一并重写掉了。
+  根因、两个客户端的实测对比、以及"为什么 `SET NAMES` 写进文件才管用"，
+  统一记在 [环境坑](#中文乱码字符集三处说法曾经互斥实测结论如下) 一节。
+
+**验证方式**：物化后的顺序没有靠"用 JS 再算一遍"来验证（那等于拿被测逻辑考自己）。
+做法是建两个临时库，让 **MySQL 自己**产出两种排序：`xm01_v7test` 用旧结构 + 旧 SQL 文件
+跑旧的 `ORDER BY`，`xm01_v7test_new` 用新结构 + 新 SQL 文件跑 `ORDER BY sort_order`，
+795 行逐行对比。除了有意去掉的 `先天·` 前缀，两边完全一致，
+四个"F 排在 D 前"的英雄两边都是 D 在前。

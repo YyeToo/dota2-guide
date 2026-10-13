@@ -12,9 +12,18 @@
 -- 执行前请先跑 upgrade_v4.sql（给 hero 表加 pos/attr/attack/complexity/avatar 五列）、
 -- upgrade_v5.sql（给 hero 表加 alias 俗称列，搜索框搜俗称要用）和
 -- upgrade_v6_slug.sql（给 hero 表加 slug 唯一标识列，教学页详情链接用）
--- 执行方式（乱码坑务必照抄）：
---   mysql -u root -p --default-character-set=utf8 < heroes_full.sql
---   ⚠️ 必须用 utf8（不是 utf8mb4）！MySQL 26.7 客户端对 utf8mb4 参数有 bug，会静默按 latin1 导入导致中文乱码
+--
+-- ⚠️ 中文乱码坑（结论是实测出来的，别按想当然改）：
+--   本文件开头有一句 SET NAMES utf8mb4; —— **那一句才是真正生效的那道**。
+--   根因：本机服务器 character_set_server=latin1（5.7 的默认值），客户端不显式指定
+--   会话字符集就会用错，UTF-8 字节被按 latin1 重新解释 → DEFAULT/COMMENT 里出现
+--   ä¸»åŠ¨ 这种乱码（"主动"两字）。行数据不受影响，不看 SHOW CREATE TABLE 很难发现。
+--   实测两个客户端的 @character_set_client：
+--     MySQL Server 5.7  不带参数 → gbk   带 --default-character-set=utf8mb4 → utf8mb4 ✅
+--     MySQL Server 26.7 不带参数 → gbk   带 --default-character-set=utf8mb4 → latin1  ❌
+--   26.7 客户端把参数整个忽略了（不报错），静默退回服务器默认值，所以光靠命令行挡不住。
+--   命令照抄这个即可，参数是给「将来某个脚本忘了写 SET NAMES」兜底的双保险：
+--     mysql -u root -p --default-character-set=utf8mb4 < heroes_full.sql
 --
 -- 本文件会：TRUNCATE hero 表 → 重新插入 127 名英雄（id 1~127 = 官网英文名首字母顺序）
 -- ============================================================
