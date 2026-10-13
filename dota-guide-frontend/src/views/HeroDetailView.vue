@@ -62,13 +62,22 @@ function categoryBadge(skill) {
   return CATEGORY_BADGES[skill.skillCategory] || null
 }
 
-// 卡片左侧色条只有 R（金）/ D / F 三种。Q/W/E 没有色条，那是"普通技能"的视觉语义。
-// 这个函数只负责给**没见过的按键**兜一个中性色：将来官网改了键位、或后端加了新按键时，
-// 卡片不会静默变成"完全没色条"，而是显式地变成中性色。
+// 卡片左侧色条只有 R（金）/ D（紫）/ F（蓝）三种。
+// Q/W/E 没有色条 —— 那是"普通技能"的视觉语义，不是漏了。
+//
+// ⚠️ 所以必须分三支，且 Q/W/E 不能和"没见过的按键"混在一起：
+//   有专属色条（R/D/F）→ 用各自的颜色
+//   确认过就是没色条（Q/W/E）→ skill-plain，什么都不画
+//   没见过的（其余任何值）→ skill-unknown，中性色兜底
+// 少了第二支，每个基础技能卡都会凭空多出一条灰条（视觉回归）；
+// 少了第三支，官网改键位时卡片会静默变成"没有色条"，跟 Q/W/E 长得一样、看不出异常。
 const BAR_KEYS = ['r', 'd', 'f']
+const PLAIN_KEYS = ['q', 'w', 'e']
 function skillBarClass(skill) {
   const k = (skill.skillKey || '').toLowerCase()
-  return BAR_KEYS.includes(k) ? 'skill-' + k : 'skill-unknown'
+  if (BAR_KEYS.includes(k)) return 'skill-' + k
+  if (PLAIN_KEYS.includes(k)) return 'skill-plain'
+  return 'skill-unknown'
 }
 
 // 官网定位（role 字段）是顿号分隔的多个标签（如"核心、控制、肉盾、先手"），
@@ -593,10 +602,8 @@ function goBack() {
    写在 border 上会被"吃掉"，::before 不受影响
 
    ⚠️ 类名由 skillBarClass() 给（见 <script setup>），不是模板里现拼字符串。
-   Q/W/E 走到 skill-unknown 这一支——它们本来就没有色条，
-   "无色条"就是"普通技能"的视觉语义，所以这里故意不给它们画东西。
-   skill-unknown 存在的意义是兜住**将来可能出现的新按键**：官网加了新键位、
-   或后端多返回一个技能位时，卡片会变成显眼的中性色条，而不是静默变成普通卡。 */
+   四个类名对应三支：有专属色的 R/D/F、确认无色条的 Q/W/E（skill-plain）、
+   以及没见过的按键（skill-unknown）。三支的判断都在上面那个函数里。 */
 .skill-r::before,
 .skill-d::before,
 .skill-f::before,
@@ -612,6 +619,11 @@ function goBack() {
 .skill-r::before { background: var(--gold); }
 .skill-d::before { background: var(--all); }
 .skill-f::before { background: var(--int); }
+
+/* Q/W/E：**故意没有色条**（上面那段共用声明里也故意没有 .skill-plain）。
+   这一句不是废笔 —— 它把"不加色条"写成一个能搜到的决定，
+   而不是靠"CSS 里没写"来表达，否则下一个人看到这仨卡片会以为漏了。 */
+.skill-plain::before { content: none; }
 
 /* 没见过的按键：中性色。故意不显眼——它只是个"这里有东西我没见过"的信号，
    不该抢走 R/D/F 三种战术色条的注意力 */
