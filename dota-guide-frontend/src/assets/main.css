@@ -368,17 +368,25 @@ select option {
   box-shadow: none;
 }
 
-/* ---------- 主属性色工具类 ----------
-   给卡片/横幅加 stripe-属性 类（如 class="stripe-力量"），
-   类里把主属性色写进三个变量，元素自己用变量画装饰：
-     --stripe      ：3px 属性竖条
-     --stripe-tint ：淡色底
-     --stripe-glow ：悬停光晕/外发光
-   图鉴卡片、详情页横幅共用，所以放全局，各页面不重复定义 */
-.stripe-力量 { --stripe: var(--str); --stripe-tint: var(--str-tint); --stripe-glow: var(--str-glow); }
-.stripe-敏捷 { --stripe: var(--agi); --stripe-tint: var(--agi-tint); --stripe-glow: var(--agi-glow); }
-.stripe-智力 { --stripe: var(--int); --stripe-tint: var(--int-tint); --stripe-glow: var(--int-glow); }
-.stripe-全才 { --stripe: var(--all); --stripe-tint: var(--all-tint); --stripe-glow: var(--all-glow); }
+/* ---------- 主属性色 → CSS 变量映射 ----------
+   元素挂一个 data-token 属性（如 data-token="str"），这里只负责把主属性色
+   写进一组变量；元素自己决定拿哪个变量画什么形状：
+     --attr      ：主属性色（竖条、边框、文字）
+     --attr-tint ：淡色底
+     --attr-glow ：悬停光晕/外发光
+
+   为什么是"一份映射 + 形状各管各的"，而不是每个形状一套类：
+   改之前颜色有四份独立复制 —— .stripe-力量 / .attr-力量 / .attr-btn-力量 /
+   .attr-text-力量 各自把 #e5574a 抄了一遍，等于养了四次"加了新属性却只改了其中两处"
+   的机会。现在颜色定义只剩这一处；色条还是色条、徽章还是徽章，形状没有被拉平。
+
+   token 由 src/domain/vocab.js 的 attrToken() 生成，认不出的值一律给 "unknown" ——
+   所以这里必须有 unknown 兜底，否则将来官网加个第五属性，卡片会静默地掉成没颜色。 */
+[data-token='str'] { --attr: var(--str); --attr-tint: var(--str-tint); --attr-glow: var(--str-glow); }
+[data-token='agi'] { --attr: var(--agi); --attr-tint: var(--agi-tint); --attr-glow: var(--agi-glow); }
+[data-token='int'] { --attr: var(--int); --attr-tint: var(--int-tint); --attr-glow: var(--int-glow); }
+[data-token='all'] { --attr: var(--all); --attr-tint: var(--all-tint); --attr-glow: var(--all-glow); }
+[data-token='unknown'] { --attr: var(--muted); --attr-tint: var(--muted-tint); --attr-glow: transparent; }
 
 /* ---------- 页面大标题渐变文字 ----------
    原理：文字设成透明，把渐变色画在背景上、再用 background-clip: text

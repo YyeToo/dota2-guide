@@ -15,6 +15,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { Library } from 'lucide-vue-next'
 // 全站共享常量：更新日期四页统一取这里
 import { UPDATE_DATE } from '../constants'
+// 聚光灯判据："这批矩形里，中心离视口中心最近的是谁" —— 纯数字进出，可单测
+import { pickFocusKey } from '../domain/focus'
 
 const route = useRoute()
 const router = useRouter()
@@ -110,26 +112,20 @@ function updateFocus() {
 
   const center = window.innerHeight / 2   // 视口中心线（顶栏 sticky 会让真实视觉中心略低，
                                           // 但差值远小于一条卡片的高度，不影响判定）
-  let bestKey = null
-  let bestDist = Infinity
 
-  for (const el of items) {
+  // 读 DOM 的活留在这里（getBoundingClientRect 只有视图层干得了），
+  // 读完立刻把元素降级成 {key, top, bottom} 三个纯数字，"谁离中心最近"交给
+  // domain/focus.js 判。原来的写法把读坐标、比距离、写状态揉在同一个 for 循环里，
+  // 那个形状**只能靠手动滚动页面来验证**；现在判据是纯函数，node --test 直接断言。
+  const rects = items.map((el) => {
     const r = el.getBoundingClientRect()
-
-    // 纵向过滤：完全在视口上方或下方的（滚过去了/还没滚到）不参与
-    if (r.bottom <= 0 || r.top >= window.innerHeight) continue
-
-    // 取中心点离视口中心最近的。用"中心点"而不是"上边缘"，
-    // 因为读者视线的落点就是卡片中心
-    const d = Math.abs((r.top + r.bottom) / 2 - center)
-    if (d < bestDist) {
-      bestDist = d
-      bestKey = el.dataset.fk
-    }
-  }
+    return { key: el.dataset.fk, top: r.top, bottom: r.bottom }
+  })
 
   // 一个候选都没有（比如滚到了页面最底部的来源面板区域，当前面板已全部划出屏幕）
-  // 就保持现状，不要把焦点"跳"到屏幕外的条目上——那会让最后一条无缘无故地亮着
+  // 时返回 null，保持现状 —— 不要把焦点"跳"到屏幕外的条目上，
+  // 那会让最后一条无缘无故地亮着
+  const bestKey = pickFocusKey(rects, center)
   if (bestKey) focusedKey.value = bestKey
 }
 
