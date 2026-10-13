@@ -30,34 +30,44 @@
 <script setup>
 // Vue 组合式 API 的常用函数：
 // ref      : 定义"响应式"数据（值变化时页面自动更新）
-// computed : 计算属性（由其他数据推导出的值，自动缓存）
 // onMounted: 生命周期钩子，组件挂载完成后执行一次（适合发请求）
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+// （原来还用了 computed —— 现在派生值都搬进 useHeroQuery 了，这里不再需要）
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 // lucide 图标：全站 emoji 统一换成 SVG 图标库
 import { Target, Library, Eraser, SearchX, CircleX } from 'lucide-vue-next'
 // useRouter：编程式导航（用代码跳转页面）
 import { useRouter } from 'vue-router'
-// 自己封装的 API 函数（见 api/hero.js）
+// 自己封装的 API 函数（见 api/hero.js）—— 只给"新手推荐区"用
 import { getHeroList } from '../api/hero'
 // 全站共享常量：更新日期四页统一取这里
 import { UPDATE_DATE } from '../constants'
+// 英雄列表的查询状态：筛选条件、分页、加载标记全在里面。
+// **页码关在那个 module 里**，这里拿不到，也就没法搞错（见该文件头部的说明）
+import { useHeroQuery } from '../composables/useHeroQuery'
+// 值 → 标识的映射（主属性色 token 等）
+import { attrToken } from '../domain/vocab'
 
 const router = useRouter()
 
-// ---------- 页面状态 ----------
-const heroes = ref([])         // 已加载的英雄（"加载更多"时向后累积）
-const recommended = ref([])    // 新手推荐英雄：难度"简单"的前 8 个（独立请求，不受筛选影响）
-const total = ref(0)           // 符合条件的英雄总数（后端返回，用来判断是否还有更多）
-const loading = ref(false)     // 首次/筛选加载中标记：true 时显示骨架屏
-const loadingMore = ref(false) // "加载更多"进行中标记：true 时按钮显示"加载中…"
-const error = ref('')          // 错误信息：非空时显示错误提示
+// ---------- 列表查询状态（全部来自 composable） ----------
+// list 重命名成 heroes：模板里 8 处都叫 heroes，改名会让 diff 全是噪音
+const {
+  list: heroes,      // 已加载的英雄（"加载更多"时向后累积）
+  total,             // 符合条件的英雄总数（后端返回，用来判断是否还有更多）
+  loading,           // 首次/筛选加载中标记：true 时显示骨架屏
+  loadingMore,       // "加载更多"进行中标记：true 时按钮显示"加载中…"
+  error,             // 错误信息：非空时显示错误提示
+  hasMore,           // 还有没有更多
+  hasFilter,         // 有没有任何筛选生效（决定"清空"按钮是否显示）
+  filters,           // 5 个筛选条件（模板里 v-model 直接绑）
+  search,            // 回第 1 页重新查（首次加载 / 筛选变化 / 重试都走它）
+  loadMore,          // 追加下一页
+  setFilter,         // 改一个筛选条件并重查
+  reset: resetFilters
+} = useHeroQuery()
 
-// ---------- 筛选条件（v-model 双向绑定到表单控件） ----------
-const keyword = ref('')     // 搜索关键词（匹配英雄名/简介）
-const role = ref('')        // 定位筛选：官网 9 定位之一，'' 表示全部
-const pos = ref('')         // 号位筛选：1-5号位，'' 表示全部
-const attr = ref('')        // 主属性筛选：力量/敏捷/智力/全才，'' 表示全部
-const complexity = ref('')  // 复杂度筛选：1/2/3，'' 表示全部
+// 推荐区是独立请求，不受筛选影响，也不属于"查询状态"，所以留在视图里
+const recommended = ref([])
 
 // ---------- 页签选项（v-for 渲染成按钮组） ----------
 // 主属性页签：官网同款四类分组
@@ -72,50 +82,13 @@ const COMPLEXITIES = [
 // 官网 9 种定位（下拉框选项）
 const ROLES = ['核心', '辅助', '爆发', '控制', '打野', '肉盾', '逃生', '推进', '先手']
 
-// ---------- 加载更多状态 ----------
-const page = ref(1)         // 当前已加载到第几页，从 1 开始
-const size = 24             // 每次加载的条数
-
-// 还有没有更多：已加载数量 < 总数
-const hasMore = computed(() => heroes.value.length < total.value)
-
-// 有没有任何筛选生效（决定"清空"按钮是否显示）
-const hasFilter = computed(() => keyword.value || role.value || pos.value || attr.value || complexity.value)
-
 // （原来的 star() 工具函数已删除：难度显示从 ★ 文本改成"实心难度点"，
 //   直接由模板 v-for 渲染 3 个圆点、按复杂度点亮，不再需要拼字符串）
 
 // ---------- 数据加载 ----------
-// append 参数：false = 重新加载第 1 页（筛选变化时），true = 追加下一页（"加载更多"）
-async function loadHeroes(append = false) {
-  // 两种加载用两个独立的状态：整页骨架屏 vs 按钮上的"加载中…"
-  // （追加时不能把整个列表换成骨架屏，否则页面会闪一下）
-  if (append) loadingMore.value = true
-  else loading.value = true
-  error.value = ''      // 清空上一次的错误
-  try {
-    // 组装查询参数：只把非空的筛选条件传给后端
-    // 后端 attr/complexity 是精确匹配（=），role/pos 是模糊匹配（LIKE）
-    const params = { page: page.value, size }
-    if (keyword.value.trim()) params.keyword = keyword.value.trim()
-    if (role.value) params.role = role.value
-    if (pos.value) params.pos = pos.value
-    if (attr.value) params.attr = attr.value
-    if (complexity.value) params.complexity = complexity.value
-
-    // 后端返回 { total, list }（拦截器已把 data 解出来）
-    const data = await getHeroList(params)
-    // 追加模式：新数据拼到旧列表尾部；重新加载：直接替换
-    heroes.value = append ? [...heroes.value, ...data.list] : data.list
-    total.value = data.total
-  } catch (e) {
-    // 失败：把原因展示到页面上（如"后端没启动""网络错误"）
-    error.value = e.message || '加载失败，请确认后端服务已启动'
-  } finally {
-    loading.value = false
-    loadingMore.value = false
-  }
-}
+// 主列表的加载逻辑（fetchPage / search / loadMore / setFilter / reset）
+// 已经搬进 composables/useHeroQuery.js —— 页码必须和筛选条件待在一起，
+// 分开就会重演「筛选变了却追加第 N 页」那类静默错乱。
 
 // 新手推荐英雄：难度"简单"的前 8 个（后端按 id 排序，取第一页 8 条即可）。
 // 失败时静默处理——推荐区只是锦上添花，不能因为它挡住主列表。
@@ -131,10 +104,15 @@ async function loadRecommended() {
 // 组件挂载完成后自动加载：推荐区 + 英雄列表第一页
 onMounted(() => {
   loadRecommended()
-  loadHeroes()
+  search()
 })
 
 // ---------- 交互 ----------
+// 下面几个 handler 只表达"意图"，都不再自己管页码 ——
+// search() / setFilter() / reset() 内部会把页码处理好。
+// 这是本阶段重构的重点：以前每个 handler 都要记得写 `page.value = 1`，
+// 漏一处就出现"筛选变了却追加第 N 页"（列表静默重复或缺行）。
+
 // 搜索防抖：输入停止 300ms 后才自动查询。
 // 为什么防抖？输入"剑圣"会触发两次 input，每次都发请求太浪费；
 // clearTimeout 把上一次还没执行的查询取消掉，只保留最后一次。
@@ -142,48 +120,30 @@ onMounted(() => {
 let searchTimer = null
 function onKeywordInput() {
   clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => {
-    page.value = 1
-    loadHeroes()
-  }, 300)
+  searchTimer = setTimeout(search, 300)
 }
 
 // 组件卸载时清掉还没执行的防抖定时器，避免页面都走了还发请求
 onBeforeUnmount(() => clearTimeout(searchTimer))
 
-// 下拉框切换筛选：自动重置到第 1 页并查询（@change 即时生效）
+// 下拉框切换筛选（@change 即时生效）：改了条件就重查，两行都不用管页码
 function onFilterChange() {
-  page.value = 1
-  loadHeroes()
+  search()
 }
 
-// 页签点击：选中该页签并查询；再点一次已选中的页签 = 取消筛选
-// ⚠️ 为什么传"名字字符串"而不是传 ref 对象：
-//   Vue 模板里的 ref 会自动解包——@click="pickTab(attr, a)" 传过去的是 attr 的"值"（字符串），
-//   不是 ref 本身，函数里写 attr.value 就会报错。所以这里传 'attr'/'complexity' 名字，
-//   在函数内部用 script 里的 ref 变量（script 里不会自动解包，.value 正常用）。
+// 页签点击：选中该页签并查询；再点一次已选中的页签 = 取消筛选。
+//
+// ⚠️ 为什么要传"名字字符串"而不是传值：
+//   模板里的 ref 会自动解包 —— @click="pickTab(filters.attr, a)" 传过去的是 attr 的
+//   **值**（字符串"力量"），函数里没法拿它去改 filters。所以传 'attr'/'complexity'
+//   这个名字，由 setFilter 去 filters 对象上取值和写值。
+//
+// "再点一次取消"这种切换逻辑留在视图里，没塞进 composable：
+// 那是**界面手势**，不是查询状态的职责 —— composable 只该知道
+// "筛选变了 → 回第 1 页重查"，不该知道"双击页签等于取消筛选"。
 function pickTab(name, value) {
-  const target = name === 'attr' ? attr : complexity
-  target.value = target.value === value ? '' : value
-  page.value = 1
-  loadHeroes()
-}
-
-// "加载更多"：页码 +1，把下一页数据追加到列表尾部
-function loadMore() {
-  page.value += 1
-  loadHeroes(true)
-}
-
-// 清空所有筛选条件
-function resetFilters() {
-  keyword.value = ''
-  role.value = ''
-  pos.value = ''
-  attr.value = ''
-  complexity.value = ''
-  page.value = 1
-  loadHeroes()
+  const current = filters[name]
+  setFilter(name, current === value ? '' : value)
 }
 
 // 点击卡片 → 跳转到详情页
@@ -213,7 +173,7 @@ function goDetail(hero) {
           v-for="hero in recommended"
           :key="'rec-' + hero.id"
           class="recommend-card card"
-          :class="'stripe-' + hero.attr"
+          :data-token="attrToken(hero.attr)"
           @click="goDetail(hero)"
         >
           <img
@@ -224,7 +184,7 @@ function goDetail(hero) {
             @error="($event) => ($event.target.style.display = 'none')"
           />
           <span class="recommend-name">{{ hero.name }}</span>
-          <span class="attr-badge" :class="'attr-' + hero.attr">{{ hero.attr }}</span>
+          <span class="attr-badge">{{ hero.attr }}</span>
         </div>
       </div>
     </div>
@@ -236,14 +196,16 @@ function goDetail(hero) {
          position: sticky 吸顶（见样式区）：往下翻列表时筛选栏固定在视口顶部 -->
     <div class="filter-bar">
       <!-- 主属性页签：官网同款分组（力量/敏捷/智力/全才），精确筛选。
-           选中色与卡片徽章一致（见样式区 .attr-btn-力量.active 等） -->
+           data-token 带着该属性的颜色（见 main.css 的 [data-token="…"]），
+           选中态直接读 --attr，和卡片徽章同一份定义 -->
       <div class="tab-group">
         <span class="group-label">主属性</span>
         <button
           v-for="a in ATTRS"
           :key="a"
           class="tab-btn attr-tab"
-          :class="['attr-btn-' + a, { active: attr === a }]"
+          :data-token="attrToken(a)"
+          :class="{ active: filters.attr === a }"
           @click="pickTab('attr', a)"
         >{{ a }}</button>
       </div>
@@ -254,7 +216,7 @@ function goDetail(hero) {
           v-for="c in COMPLEXITIES"
           :key="c.value"
           class="tab-btn"
-          :class="{ active: complexity === c.value }"
+          :class="{ active: filters.complexity === c.value }"
           @click="pickTab('complexity', c.value)"
         >{{ c.label }}<span class="dots">
             <i v-for="n in 3" :key="n" :class="{ on: n <= c.level }"></i>
@@ -263,17 +225,17 @@ function goDetail(hero) {
       <!-- 搜索框（@input 即时搜索 + 300ms 防抖，没有搜索按钮）+ 定位/号位下拉框 -->
       <div class="filter-row">
         <input
-          v-model="keyword"
+          v-model="filters.keyword"
           class="search-input"
           type="text"
           placeholder="搜索英雄名 / 俗称（剑圣、冰女）/ 简介关键词"
           @input="onKeywordInput"
         />
-        <select v-model="role" class="filter-select" @change="onFilterChange">
+        <select v-model="filters.role" class="filter-select" @change="onFilterChange">
           <option value="">全部定位</option>
           <option v-for="r in ROLES" :key="r" :value="r">{{ r }}</option>
         </select>
-        <select v-model="pos" class="filter-select" @change="onFilterChange">
+        <select v-model="filters.pos" class="filter-select" @change="onFilterChange">
           <option value="">全部号位</option>
           <option value="1号位">1号位</option>
           <option value="2号位">2号位</option>
@@ -306,11 +268,16 @@ function goDetail(hero) {
       </div>
     </div>
 
-    <!-- 状态二：加载失败（后端没启动、网络错误等） -->
+    <!-- 状态二：加载失败（后端没启动、网络错误等）
+         ⚠️ 这里以前写的是 @click="loadHeroes"。Vue 对裸方法引用会把 $event 当第一个
+         实参传进去，而旧 loadHeroes(append = false) 判的是真假 —— MouseEvent 是 truthy，
+         于是「重试」实际走的是**追加**模式：不显示骨架屏，还把结果拼到旧列表尾部。
+         首次加载失败时列表是空的，追加等于正常加载，所以一直没暴露。
+         现在改成 search()：它明确是"按当前筛选条件回第 1 页重查"，没有第二个参数可传错。 -->
     <div v-else-if="error" class="status error">
       <p><CircleX :size="36" class="error-icon" /></p>
       <p>{{ error }}</p>
-      <button @click="loadHeroes">重试</button>
+      <button @click="search">重试</button>
     </div>
 
     <!-- 状态三：正常展示
@@ -329,7 +296,7 @@ function goDetail(hero) {
           v-for="hero in heroes"
           :key="hero.id"
           class="hero-card card"
-          :class="'stripe-' + hero.attr"
+          :data-token="attrToken(hero.attr)"
           @click="goDetail(hero)"
         >
           <!-- 头像列：头像 + 下方"近战/远程"标签（用户要求：攻击方式贴头像下面，
@@ -353,8 +320,9 @@ function goDetail(hero) {
           <div class="card-main">
             <div class="card-header">
               <h2 class="hero-name">{{ hero.name }}</h2>
-              <!-- 主属性徽章：力量红/敏捷绿/智力蓝/全才紫（Dota 属性配色） -->
-              <span class="attr-badge" :class="'attr-' + hero.attr">{{ hero.attr }}</span>
+              <!-- 主属性徽章：力量红/敏捷绿/智力蓝/全才紫（Dota 属性配色）。
+                   颜色由卡片上的 data-token 提供，徽章只管形状 -->
+              <span class="attr-badge">{{ hero.attr }}</span>
             </div>
             <!-- 定位标签统一中性灰（用户要求：红绿蓝紫只留给主属性标签）；
                  攻击方式和难度点都已移到头像下面，这一行现在只剩定位标签 -->
@@ -536,12 +504,13 @@ function goDetail(hero) {
 }
 
 /* 主属性页签选中态：实底填充成对应属性色 + 深色文字（力量红/敏捷绿/智力蓝/全才紫）。
-   模板里按钮的 class 是 'attr-btn-' + 属性名（如 attr-btn-力量），
-   只有同时带 active 才上色——未选中时保持默认灰。 */
-.attr-btn-力量.active { color: var(--bg); border-color: var(--str); background: var(--str); }
-.attr-btn-敏捷.active { color: var(--bg); border-color: var(--agi); background: var(--agi); }
-.attr-btn-智力.active { color: var(--bg); border-color: var(--int); background: var(--int); }
-.attr-btn-全才.active { color: var(--bg); border-color: var(--all); background: var(--all); }
+   颜色来自按钮自己的 data-token（见 main.css），这里只管"选中时实底填充"这个形状；
+   未选中时不上色，保持默认灰。unknown 属性也会跟着 --attr 变成中性灰，不会没颜色。 */
+.attr-tab.active {
+  color: var(--bg);
+  border-color: var(--attr);
+  background: var(--attr);
+}
 
 .filter-row {
   display: flex;
@@ -643,9 +612,10 @@ function goDetail(hero) {
 
 /* ---------- 3px 属性竖条（第二批） ----------
    卡片最左侧一条属性色竖条：不点开详情也能一眼看出主属性。
-   实现：给卡片加 stripe-属性 类（模板 :class="'stripe-' + hero.attr"），
-   类里把属性色写进 --stripe 变量；.card 是 12px 圆角，
-   竖条要贴圆角裁切，所以卡片 overflow: hidden（不影响悬停的位移动画） */
+   实现：卡片挂 data-token（模板 :data-token="attrToken(hero.attr)"），
+   main.css 把属性色写进 --attr，这里只管"3px 贴左边"这个形状。
+   .card 是 12px 圆角，竖条要贴圆角裁切，所以卡片 overflow: hidden
+   （不影响悬停的位移动画） */
 .hero-card,
 .recommend-card {
   position: relative;
@@ -660,11 +630,8 @@ function goDetail(hero) {
   top: 0;
   bottom: 0;
   width: 3px;
-  background: var(--stripe, transparent);
+  background: var(--attr, transparent);
 }
-
-/* 四种主属性 → 竖条色 + 发光色：stripe-属性 类定义在 main.css（全局），
-   图鉴卡片和详情页横幅共用 */
 
 /* ---------- 头像放大 + 发光（第二批） ----------
    悬停卡片时头像轻微放大（1.06）并浮起一圈属性色光晕。
@@ -677,8 +644,8 @@ function goDetail(hero) {
 .hero-card:hover .hero-avatar,
 .recommend-card:hover .recommend-avatar {
   transform: scale(1.06);
-  border-color: var(--stripe);
-  box-shadow: 0 0 18px var(--stripe-glow);
+  border-color: var(--attr);
+  box-shadow: 0 0 18px var(--attr-glow);
 }
 
 /* ---------- 实心难度点（第二批） ----------
@@ -809,18 +776,16 @@ function goDetail(hero) {
 }
 
 /* 主属性徽章：小方块，Dota 属性配色（力量红/敏捷绿/智力蓝/全才紫）。
+   颜色不在这里 —— 徽章是卡片的后代，直接继承卡片 data-token 定下的 --attr。
    用户要求方角：原来是 999px 胶囊，现在 4px 小圆角（和全站圆角风格不打架的"方形"） */
 .attr-badge {
   font-size: 12px;
   padding: 2px 10px;
   border-radius: 4px;
-  border: 1px solid;
+  border: 1px solid var(--attr);
+  color: var(--attr);
+  background: var(--attr-tint);
 }
-
-.attr-力量 { color: var(--str); border-color: var(--str); background: var(--str-tint); }
-.attr-敏捷 { color: var(--agi); border-color: var(--agi); background: var(--agi-tint); }
-.attr-智力 { color: var(--int); border-color: var(--int); background: var(--int-tint); }
-.attr-全才 { color: var(--all); border-color: var(--all); background: var(--all-tint); }
 
 /* 卡片第二行：定位标签 + 攻击方式/难度 */
 .card-tags {

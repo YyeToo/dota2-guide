@@ -16,6 +16,12 @@ import { getHeroDetail } from '../api/hero'
 import { Target, BookOpen, Swords, Gem, ClipboardList, Scale, CircleX, ArrowLeft } from 'lucide-vue-next'
 // 全站共享常量：更新日期四页统一取这里
 import { UPDATE_DATE } from '../constants'
+// 值 → 界面标识的映射（主属性色 token、技能徽章、技能色条类名）
+import { attrToken, categoryBadge, skillBarClass } from '../domain/vocab'
+// 技能的领域谓词（算不算"强化类"、算不算"先天"）
+import { isUpgradeSkill, isInnate } from '../domain/skill'
+// 英雄字段的展示换算（定位拆分 / 难度星 / 号位进度条）
+import { splitRoles, complexityStars, posFillPercent } from '../domain/hero'
 
 // router/index.js 里配了一个 props 函数，把 URL 里的 :key 改名成 heroKey 传进来：
 //   访问 /heroes/sven 这里 heroKey 是 "sven"（站内链接都用 slug）
@@ -39,73 +45,21 @@ const error = ref('')
 //   2. upgradeSkills —— "强化类"（魔晶/神杖只强化已有技能、不占新按键）
 //     这类技能单独放一个面板展示，不标按键字母
 //
-// ⚠️ 判据用 skillCategory，不用「skillKey 是不是空字符串」。
-// 物化之前这两者恰好等价，但「按键为空」只是强化类的副作用，不是它的定义 ——
-// 分类列才是定义。（真出现"基础技能放不下第 5 个"这种边角时，两者就会不一致。）
-const UPGRADE_CATEGORIES = ['魔晶强化', '神杖强化']
-function isUpgradeSkill(skill) {
-  return UPGRADE_CATEGORIES.includes(skill.skillCategory)
-}
+// 判据、徽章、色条这三件事的实现都搬去了 src/domain/ —— 它们是"技能值长什么样"
+// 的领域知识，不是这个页面的视图规则。这里只剩"把 hero 塞进去"的接线。
 const keyedSkills = computed(() => (hero.value?.skills || []).filter((s) => !isUpgradeSkill(s)))
 const upgradeSkills = computed(() => (hero.value?.skills || []).filter(isUpgradeSkill))
 
-// 技能分类 → 徽章。魔晶和神杖各一个颜色；「新增」和「强化」显示同一个徽章 ——
-// 对新手来说"这个技能要买魔晶"才是重点，是不是多了一个技能位看面板位置就知道了。
-// 未知分类返回 null，模板里 v-if 直接不渲染，不会画出个空徽章。
-const CATEGORY_BADGES = {
-  '魔晶新增': { text: '魔晶', cls: 'badge-shard' },
-  '魔晶强化': { text: '魔晶', cls: 'badge-shard' },
-  '神杖新增': { text: '神杖', cls: 'badge-scepter' },
-  '神杖强化': { text: '神杖', cls: 'badge-scepter' }
-}
-function categoryBadge(skill) {
-  return CATEGORY_BADGES[skill.skillCategory] || null
-}
-
-// 卡片左侧色条只有 R（金）/ D（紫）/ F（蓝）三种。
-// Q/W/E 没有色条 —— 那是"普通技能"的视觉语义，不是漏了。
-//
-// ⚠️ 所以必须分三支，且 Q/W/E 不能和"没见过的按键"混在一起：
-//   有专属色条（R/D/F）→ 用各自的颜色
-//   确认过就是没色条（Q/W/E）→ skill-plain，什么都不画
-//   没见过的（其余任何值）→ skill-unknown，中性色兜底
-// 少了第二支，每个基础技能卡都会凭空多出一条灰条（视觉回归）；
-// 少了第三支，官网改键位时卡片会静默变成"没有色条"，跟 Q/W/E 长得一样、看不出异常。
-const BAR_KEYS = ['r', 'd', 'f']
-const PLAIN_KEYS = ['q', 'w', 'e']
-function skillBarClass(skill) {
-  const k = (skill.skillKey || '').toLowerCase()
-  if (BAR_KEYS.includes(k)) return 'skill-' + k
-  if (PLAIN_KEYS.includes(k)) return 'skill-plain'
-  return 'skill-unknown'
-}
-
 // 官网定位（role 字段）是顿号分隔的多个标签（如"核心、控制、肉盾、先手"），
 // 拆成数组后逐个渲染成小徽章
-const roleList = computed(() => {
-  if (!hero.value?.role) return []
-  return hero.value.role.split(/[、，,]/).map((s) => s.trim()).filter(Boolean)
-})
+const roleList = computed(() => splitRoles(hero.value?.role))
 
 // 复杂度 1/2/3 → ★/★★/★★★，头部徽章展示
-const starText = computed(() => '★'.repeat(hero.value?.complexity || 1))
+const starText = computed(() => complexityStars(hero.value?.complexity))
 
-// 号位 → "资源优先级"进度条填充百分比（第二批新加，侧栏属性速览用）：
-// 1 号位全队吃资源最多 = 满格（100%），5 号位最少 = 20%。
-// hero.pos 是 "1号位" / "4/5号位" 这类字符串，parseInt 取第一个数字；
-// 解析不出合法号位（1~5）时返回 0，模板里 v-if 判断不渲染进度条
-const posFill = computed(() => {
-  const n = parseInt(hero.value?.pos)
-  return n >= 1 && n <= 5 ? ((6 - n) / 5) * 100 : 0
-})
-
-// 官网的"先天技能"（出生自带、随等级自动升级，如剑圣的剑舞）。
-// ⚠️ 读 is_innate 列，不再看技能名开头的"先天·"前缀。
-// 那个前缀是生成器为了"把信息塞进名字里"打的补丁，代价是技能名不再是官网原名；
-// 现在信息有正经的列了，名字就该干净。
-function isInnate(skill) {
-  return skill.isInnate === 1
-}
+// 号位 → "资源优先级"进度条填充百分比（第二批新加，侧栏属性速览用）。
+// 解析不出合法号位（1~5）时是 0，模板里 v-if 判断不渲染进度条
+const posFill = computed(() => posFillPercent(hero.value?.pos))
 
 async function loadHero() {
   loading.value = true
@@ -147,14 +101,21 @@ function goBack() {
     </div>
 
     <!-- 状态三：正常展示 -->
-    <div v-else class="detail-body">
+    <!-- ⚠️ data-token 挂在这一层，不是挂在横幅上。
+         因为要用主属性色的不只是横幅里的东西（竖条 / 光晕 / 徽章 / 头像描边），
+         还有右栏「属性速览」里那个主属性值 —— 而右栏是横幅的**兄弟**，不是后代。
+         挂在横幅上的话 --attr 传不到右栏，`color: var(--attr)` 会静默失效
+         （变量没定义时声明整条作废，文字退回默认色，不报错）。
+         挂在共同祖先上，一套 --attr 供两处用，且换英雄只改这一个属性。
+         骨架屏/错误分支不需要颜色，所以不挂在外层的 .detail 上 -->
+    <div v-else class="detail-body" :data-token="attrToken(hero.attr)">
       <button class="back-btn" @click="goBack"><ArrowLeft :size="14" />返回列表</button>
 
       <!-- 英雄横幅（第二批改造：原来是裸排的头像+文字，现在包成卡片式横幅）：
            头像 + 名字 + 基础徽章 + 官方定位标签；
-           stripe-属性 类把主属性色写进 --stripe 等变量（main.css 全局定义），
+           颜色读祖先的 data-token 写下的 --attr（main.css 全局定义），
            横幅的左侧竖条、背景光晕、头像描边/发光都跟着主属性变色 -->
-      <div class="hero-header card" :class="'stripe-' + hero.attr">
+      <div class="hero-header card">
         <img
           class="hero-avatar"
           :src="hero.avatar"
@@ -165,7 +126,7 @@ function goBack() {
           <h1 class="gradient-title">{{ hero.name }}</h1>
           <!-- 主属性 / 攻击方式 / 复杂度 / 号位 四个基础徽章 -->
           <div class="header-tags">
-            <span class="attr-badge" :class="'attr-' + hero.attr">{{ hero.attr }}</span>
+            <span class="attr-badge">{{ hero.attr }}</span>
             <span class="meta-badge">{{ hero.attack }}</span>
             <span class="meta-badge">难度 {{ starText }}</span>
             <span v-if="hero.pos" class="meta-badge">{{ hero.pos }}</span>
@@ -250,7 +211,7 @@ function goBack() {
                   <span class="stat-label">主属性</span>
                   <!-- 主属性值用属性色显示（和图鉴徽章同色系），不用进度条：
                        力量/敏捷/智力是"分类"不是"数值"，画进度条没有意义 -->
-                  <span class="stat-value" :class="'attr-text-' + hero.attr">{{ hero.attr }}</span>
+                  <span class="stat-value attr-text">{{ hero.attr }}</span>
                 </div>
               </li>
               <li>
@@ -379,11 +340,10 @@ function goBack() {
 }
 
 /* 主属性值用属性色（和图鉴徽章同色系）；力量/敏捷/智力是"分类"不是"数值"，
-   所以只上色、不画进度条 */
-.attr-text-力量 { color: var(--str); }
-.attr-text-敏捷 { color: var(--agi); }
-.attr-text-智力 { color: var(--int); }
-.attr-text-全才 { color: var(--all); }
+   所以只上色、不画进度条。
+   颜色继承自 .detail-body 上的 data-token（见 main.css），这里只管
+   "这个值用属性色写"的形状 */
+.attr-text { color: var(--attr); }
 
 /* ---------- 数值进度条（第二批） ----------
    难度 / 号位这类"数值型"项在数值下面加一条 4px 进度条：
@@ -446,7 +406,7 @@ function goBack() {
 
 /* 英雄横幅（第二批）：不再是裸排的头像+文字，而是卡片式横幅——
    左侧 3px 主属性色竖条（和图鉴卡片呼应）、左上角一层属性色淡光晕。
-   颜色来自 .stripe-属性 类写进变量，换英雄自动变色 */
+   颜色来自横幅上的 data-token 写进 --attr 变量，换英雄自动变色 */
 .hero-header {
   display: flex;
   align-items: center;
@@ -455,9 +415,9 @@ function goBack() {
   position: relative;
   overflow: hidden;
   padding: 20px 24px;
-  border-left: 3px solid var(--stripe);
+  border-left: 3px solid var(--attr);
   background:
-    radial-gradient(560px 220px at 8% -40%, var(--stripe-tint), transparent 62%),
+    radial-gradient(560px 220px at 8% -40%, var(--attr-tint), transparent 62%),
     var(--card);
 }
 
@@ -466,7 +426,7 @@ function goBack() {
 .hero-header:hover {
   transform: none;
   border-color: var(--border);
-  border-left-color: var(--stripe);
+  border-left-color: var(--attr);
   box-shadow: none;
 }
 
@@ -481,9 +441,9 @@ function goBack() {
   width: 96px;
   height: 96px;
   border-radius: var(--radius-sm);
-  border: 2px solid var(--stripe);
+  border: 2px solid var(--attr);
   background: var(--bg);   /* 加载失败时的底色 */
-  box-shadow: 0 0 24px var(--stripe-glow);
+  box-shadow: 0 0 24px var(--attr-glow);
   flex-shrink: 0;
 }
 
@@ -506,18 +466,16 @@ function goBack() {
 }
 
 /* 主属性徽章：Dota 属性配色（力量红/敏捷绿/智力蓝/全才紫）。
+   颜色不在这里 —— 徽章是横幅的后代，继承横幅 data-token 定下的 --attr。
    用户要求方角：原来是 999px 胶囊，现在 4px 小圆角（和图鉴页保持同一形状） */
 .attr-badge {
   font-size: 13px;
   padding: 3px 12px;
   border-radius: 4px;
-  border: 1px solid;
+  border: 1px solid var(--attr);
+  color: var(--attr);
+  background: var(--attr-tint);
 }
-
-.attr-力量 { color: var(--str); border-color: var(--str); background: var(--str-tint); }
-.attr-敏捷 { color: var(--agi); border-color: var(--agi); background: var(--agi-tint); }
-.attr-智力 { color: var(--int); border-color: var(--int); background: var(--int-tint); }
-.attr-全才 { color: var(--all); border-color: var(--all); background: var(--all-tint); }
 
 /* 攻击方式 / 难度 / 号位：灰色小徽章 */
 .meta-badge {
