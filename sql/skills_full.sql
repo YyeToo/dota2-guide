@@ -1,6 +1,6 @@
 -- ============================================================
 -- skills_full.sql —— 技能全量数据（第四阶段：对齐 dota2.com 官网）
--- 生成日期：2026-10-06（由 sql/gen_official.js 生成，请勿手改本文件）
+-- 生成日期：2026-10-13（由 sql/gen_official.js 生成，请勿手改本文件）
 --
 -- 数据来源：官网 herodata 接口的 abilities 数组（desc_loc / shard_loc / scepter_loc）
 --
