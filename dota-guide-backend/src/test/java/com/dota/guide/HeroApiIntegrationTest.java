@@ -11,6 +11,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -238,6 +239,10 @@ class HeroApiIntegrationTest {
     // 3. 英雄与技能的关联（一对多 join）
     // ============================================================
 
+    /** 技能分类的合法取值。和 sql/lib/skills.js 里那五类一一对应 */
+    private static final Set<String> SKILL_CATEGORIES = Set.of(
+            "基础", "魔晶新增", "神杖新增", "魔晶强化", "神杖强化");
+
     @Test
     @DisplayName("每个英雄都至少有一条技能，且技能字段完整")
     void everyHeroHasSkills() throws Exception {
@@ -256,15 +261,52 @@ class HeroApiIntegrationTest {
                 continue;
             }
             for (JsonNode skill : skills) {
-                if (skill.path("skillName").asText().isBlank()) problems.add(name + " 有技能没名字");
-                // skillDesc 允许为空（极少数技能官网就没写描述），但技能名和来源必须有
-                if (skill.path("skillSource").asText().isBlank()) problems.add(name + "/" + skill.path("skillName").asText() + " 缺技能来源");
-                if (skill.path("skillType").asText().isBlank()) problems.add(name + "/" + skill.path("skillName").asText() + " 缺主动/被动");
+                String skillName = skill.path("skillName").asText();
+                if (skillName.isBlank()) problems.add(name + " 有技能没名字");
+                // skillDesc 允许为空（极少数技能官网就没写描述），但技能名和分类必须有
+                String category = skill.path("skillCategory").asText();
+                if (category.isBlank()) problems.add(name + "/" + skillName + " 缺技能分类");
+                else if (!SKILL_CATEGORIES.contains(category)) {
+                    // 分类是物化进数据库的，冒出没见过的取值说明生成器和前端对不上了
+                    problems.add(name + "/" + skillName + " 技能分类取值非法：" + category);
+                }
+                if (skill.path("skillType").asText().isBlank()) problems.add(name + "/" + skillName + " 缺主动/被动");
+                if (skill.path("isInnate").isMissingNode()) problems.add(name + "/" + skillName + " 缺 isInnate");
+                if (skill.path("sortOrder").isMissingNode()) problems.add(name + "/" + skillName + " 缺 sortOrder");
             }
         }
 
         assertTrue(withoutSkills.isEmpty(), "这些英雄一条技能都没有（hero_skill 表没挂上？）：" + withoutSkills);
         assertTrue(problems.isEmpty(), "技能字段缺失：" + problems);
+    }
+
+    @Test
+    @DisplayName("每个英雄的 sortOrder 都是 1..n 连续且不重号")
+    void sortOrderIsContiguousPerHero() throws Exception {
+        // 这条守的是「技能显示顺序」本身。顺序错乱是静默的：接口照常返回 200，
+        // 只是技能排错了位置，人眼看着一堆技能卡很难发现。
+        // 数据库上有 UNIQUE KEY (hero_id, sort_order) 兜着重号，
+        // 这里再从接口这一侧确认一遍「拿到的就是 1..n 连续」。
+        List<String> problems = new ArrayList<>();
+
+        for (JsonNode hero : fetchAllHeroes()) {
+            long id = hero.path("id").asLong();
+            String name = hero.path("name").asText();
+            JsonNode skills = getJson("/api/heroes/" + id).path("data").path("skills");
+
+            List<Integer> orders = new ArrayList<>();
+            for (JsonNode skill : skills) orders.add(skill.path("sortOrder").asInt());
+            Collections.sort(orders);
+
+            List<Integer> expected = new ArrayList<>();
+            for (int i = 1; i <= orders.size(); i++) expected.add(i);
+
+            if (!orders.equals(expected)) {
+                problems.add(name + "(id=" + id + ") 的 sortOrder 是 " + orders + "，应为 " + expected);
+            }
+        }
+
+        assertTrue(problems.isEmpty(), "这些英雄的技能位次不连续：" + problems);
     }
 
     @Test

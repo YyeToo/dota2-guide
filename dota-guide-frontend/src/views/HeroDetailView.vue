@@ -35,11 +35,41 @@ const loading = ref(true)
 const error = ref('')
 
 // 技能分两类展示：
-//   1. keyedSkills —— 有按键的（Q/W/E/R 基础技能 + 魔晶/神杖"新增"技能的 D/F）
-//   2. upgradeSkills —— "强化类"（魔晶/神杖只强化已有技能、不占新按键，skillKey 是空字符串）
+//   1. keyedSkills   —— 有按键的独立技能（Q/W/E/R 基础技能 + 魔晶/神杖"新增"的 D/F）
+//   2. upgradeSkills —— "强化类"（魔晶/神杖只强化已有技能、不占新按键）
 //     这类技能单独放一个面板展示，不标按键字母
-const keyedSkills = computed(() => (hero.value?.skills || []).filter((s) => s.skillKey))
-const upgradeSkills = computed(() => (hero.value?.skills || []).filter((s) => !s.skillKey))
+//
+// ⚠️ 判据用 skillCategory，不用「skillKey 是不是空字符串」。
+// 物化之前这两者恰好等价，但「按键为空」只是强化类的副作用，不是它的定义 ——
+// 分类列才是定义。（真出现"基础技能放不下第 5 个"这种边角时，两者就会不一致。）
+const UPGRADE_CATEGORIES = ['魔晶强化', '神杖强化']
+function isUpgradeSkill(skill) {
+  return UPGRADE_CATEGORIES.includes(skill.skillCategory)
+}
+const keyedSkills = computed(() => (hero.value?.skills || []).filter((s) => !isUpgradeSkill(s)))
+const upgradeSkills = computed(() => (hero.value?.skills || []).filter(isUpgradeSkill))
+
+// 技能分类 → 徽章。魔晶和神杖各一个颜色；「新增」和「强化」显示同一个徽章 ——
+// 对新手来说"这个技能要买魔晶"才是重点，是不是多了一个技能位看面板位置就知道了。
+// 未知分类返回 null，模板里 v-if 直接不渲染，不会画出个空徽章。
+const CATEGORY_BADGES = {
+  '魔晶新增': { text: '魔晶', cls: 'badge-shard' },
+  '魔晶强化': { text: '魔晶', cls: 'badge-shard' },
+  '神杖新增': { text: '神杖', cls: 'badge-scepter' },
+  '神杖强化': { text: '神杖', cls: 'badge-scepter' }
+}
+function categoryBadge(skill) {
+  return CATEGORY_BADGES[skill.skillCategory] || null
+}
+
+// 卡片左侧色条只有 R（金）/ D / F 三种。Q/W/E 没有色条，那是"普通技能"的视觉语义。
+// 这个函数只负责给**没见过的按键**兜一个中性色：将来官网改了键位、或后端加了新按键时，
+// 卡片不会静默变成"完全没色条"，而是显式地变成中性色。
+const BAR_KEYS = ['r', 'd', 'f']
+function skillBarClass(skill) {
+  const k = (skill.skillKey || '').toLowerCase()
+  return BAR_KEYS.includes(k) ? 'skill-' + k : 'skill-unknown'
+}
 
 // 官网定位（role 字段）是顿号分隔的多个标签（如"核心、控制、肉盾、先手"），
 // 拆成数组后逐个渲染成小徽章
@@ -61,9 +91,11 @@ const posFill = computed(() => {
 })
 
 // 官网的"先天技能"（出生自带、随等级自动升级，如剑圣的剑舞）。
-// 技能名带"先天·"前缀，识别出来单独打"先天"徽章
+// ⚠️ 读 is_innate 列，不再看技能名开头的"先天·"前缀。
+// 那个前缀是生成器为了"把信息塞进名字里"打的补丁，代价是技能名不再是官网原名；
+// 现在信息有正经的列了，名字就该干净。
 function isInnate(skill) {
-  return skill.skillName.startsWith('先天·')
+  return skill.isInnate === 1
 }
 
 async function loadHero() {
@@ -160,7 +192,7 @@ function goBack() {
                 v-for="skill in keyedSkills"
                 :key="skill.id"
                 class="skill-card card card-sm"
-                :class="'skill-' + skill.skillKey.toLowerCase()"
+                :class="skillBarClass(skill)"
               >
                 <!-- 按键徽章：Q/W/E 灰色，R（大招）金色，D（魔晶新技能）紫色，F（神杖新技能）蓝色 -->
                 <span class="skill-key">{{ skill.skillKey }}</span>
@@ -170,8 +202,7 @@ function goBack() {
                     <h3>{{ skill.skillName }}</h3>
                     <span v-if="isInnate(skill)" class="badge badge-innate">先天</span>
                     <span v-if="skill.skillType === '被动'" class="badge badge-passive">被动</span>
-                    <span v-if="skill.skillSource === '魔晶'" class="badge badge-shard">魔晶</span>
-                    <span v-if="skill.skillSource === '神杖'" class="badge badge-scepter">神杖</span>
+                    <span v-if="categoryBadge(skill)" class="badge" :class="categoryBadge(skill).cls">{{ categoryBadge(skill).text }}</span>
                   </div>
                   <p>{{ skill.skillDesc }}</p>
                 </div>
@@ -189,8 +220,7 @@ function goBack() {
                     <h3>{{ skill.skillName }}</h3>
                     <span v-if="isInnate(skill)" class="badge badge-innate">先天</span>
                     <span v-if="skill.skillType === '被动'" class="badge badge-passive">被动</span>
-                    <span v-if="skill.skillSource === '魔晶'" class="badge badge-shard">魔晶</span>
-                    <span v-if="skill.skillSource === '神杖'" class="badge badge-scepter">神杖</span>
+                    <span v-if="categoryBadge(skill)" class="badge" :class="categoryBadge(skill).cls">{{ categoryBadge(skill).text }}</span>
                   </div>
                   <p>{{ skill.skillDesc }}</p>
                 </div>
@@ -560,10 +590,17 @@ function goBack() {
 
 /* 大招 R / 魔晶 D / 神杖 F 技能卡：左侧 3px 色条，和普通技能卡一眼区分。
    用 ::before 画色条而不是 border-left：悬停时全局 .card 会把边框整体变金色，
-   写在 border 上会被"吃掉"，::before 不受影响 */
+   写在 border 上会被"吃掉"，::before 不受影响
+
+   ⚠️ 类名由 skillBarClass() 给（见 <script setup>），不是模板里现拼字符串。
+   Q/W/E 走到 skill-unknown 这一支——它们本来就没有色条，
+   "无色条"就是"普通技能"的视觉语义，所以这里故意不给它们画东西。
+   skill-unknown 存在的意义是兜住**将来可能出现的新按键**：官网加了新键位、
+   或后端多返回一个技能位时，卡片会变成显眼的中性色条，而不是静默变成普通卡。 */
 .skill-r::before,
 .skill-d::before,
-.skill-f::before {
+.skill-f::before,
+.skill-unknown::before {
   content: '';
   position: absolute;
   left: 0;
@@ -575,6 +612,10 @@ function goBack() {
 .skill-r::before { background: var(--gold); }
 .skill-d::before { background: var(--all); }
 .skill-f::before { background: var(--int); }
+
+/* 没见过的按键：中性色。故意不显眼——它只是个"这里有东西我没见过"的信号，
+   不该抢走 R/D/F 三种战术色条的注意力 */
+.skill-unknown::before { background: var(--muted); }
 
 /* 按键徽章 */
 .skill-key {
