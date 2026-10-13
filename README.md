@@ -42,13 +42,25 @@ XM-01/
 │   ├── upgrade_v2~v6.sql         # 历史版本升级脚本（一般用不到，见 docs/DEVELOPMENT.md）
 │   ├── update_all.sh             # 一键更新流水线
 │   ├── download_official.js      # 流水线第 1 步：拉取官网原始数据
-│   └── gen_official.js           # 流水线第 3 步：生成 heroes_full / skills_full
+│   ├── gen_official.js           # 流水线第 3 步：生成 heroes_full / skills_full（命令行入口）
+│   ├── lib/                      # 生成规则，按阶段分文件（改规则来这里）
+│   │   ├── vocab.js              #   常量 + 手工特例表（俗称/按键特例/替换文案兜底）
+│   │   ├── text.js               #   文本清洗与 %token% 占位符解析
+│   │   ├── heroes.js             #   英雄行（官网数据 + 教学数据合并）
+│   │   ├── skills.js             #   技能行（按键/来源/主动被动分类）
+│   │   ├── render.js             #   SQL 渲染
+│   │   └── review.js             #   人工复核清单（含严重度分级）
+│   └── test/                     # 生成器测试（node --test）
+│       ├── lib.test.js           #   各阶段规则的单元测试
+│       ├── golden.test.js        #   全量对比：生成结果 vs 已发布的 .sql
+│       └── fixtures/             #   golden 测试用的冻结输入
 ├── dota-guide-backend/           # 后端：Spring Boot 3 + MyBatis
 │   ├── pom.xml                   # Maven 依赖清单（相当于 package.json）
 │   ├── mvnw / mvnw.cmd           # Maven Wrapper：免安装 Maven
-│   └── src/main/
-│       ├── java/com/dota/guide/  # controller / service / mapper / entity / common / config
-│       └── resources/application.yml   # 端口、数据库连接、MyBatis 配置
+│   ├── src/main/
+│   │   ├── java/com/dota/guide/  # controller / service / mapper / entity / common / config
+│   │   └── resources/            # application.yml（数据库连接等配置）
+│   └── src/test/                 # 后端集成测试（连真实数据库跑完整 HTTP 链路）
 └── dota-guide-frontend/          # 前端：Vue 3 + Vite
     ├── vite.config.js
     └── src/
@@ -204,8 +216,14 @@ bash sql/update_all.sh
 3. [gen_official.js](sql/gen_official.js) —— 合并两边数据，生成 `heroes_full.sql` / `skills_full.sql`
 4. **导入数据库** —— 先英雄后技能，最后打印总数/分布校验
 
-> 💡 官网新增英雄（>127）时生成器会报"请先补齐数据！"——按提示在 gen_official.js 的
-> NEW_HERO_DATA 里补上数据即可。表结构不变，跑完后端无需重启。
+> 💡 官网新增英雄（>127）时生成器会报"请先补齐数据！"——按提示在
+> [sql/lib/vocab.js](sql/lib/vocab.js) 的 `NEW_HERO_DATA` 里补上数据即可。
+> 表结构不变，跑完后端无需重启。
+
+> ⚠️ 生成器发现**阻断级问题**时会以退出码 2 结束，流水线停在第 3 步、
+> **不会**把数据导入数据库（SQL 文件仍会写出，方便查看）。这些是会让写进库里的
+> 数据出错的状况：key 写错字的俗称、手写覆盖的文案片段没命中、`%token%` 查不到数值等。
+> 看它打印的「人工复核清单」即可定位。
 
 ## 常见报错与解决
 
@@ -228,19 +246,49 @@ bash sql/update_all.sh
 
 > 数据库停留在早期版本结构导致的报错（`Unknown column 'attr'` 等），见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
+## 跑测试
+
+```bash
+# 生成器测试（63 条，不需要数据库、不需要官网原始数据）
+cd sql
+node --test
+
+# 后端集成测试（9 条，需要 MySQL 在跑、dota_guide 库有数据）
+cd dota-guide-backend
+./mvnw test
+```
+
+生成器测试分两层：
+
+- `lib.test.js` —— 各阶段规则的单元测试（占位符替换顺序、按键分配边界、复核清单分级……）
+- `golden.test.js` —— 拿仓库里真实的两份输入跑完整条流水线，把结果和**已发布的
+  `heroes_full.sql` / `skills_full.sql` 逐字节对比**。这两个文件正是要保证的东西，
+  所以直接拿它们当期望值。**它会在 `sql/_official_raw/` 不存在时自动跳过**（该目录被
+  `.gitignore` 排除），unit 测试不受影响。
+
+后端集成测试连真实数据库、走完整 HTTP 链路（MockMvc → Controller → Service → Mapper），
+断言的是「SQL 文件、表结构、代码三者是否一致」这类编译期发现不了的问题 ——
+比如 127 个英雄的 slug 是否唯一非空、每个英雄是否都挂得上技能、中文有没有乱码。
+它是**只读**的，对着生产库跑也安全。
+
 ## 常见命令速查
 
 ```bash
-# 后端：编译 / 启动 / 打包
+# 后端：编译 / 启动 / 打包 / 测试
 cd dota-guide-backend
 ./mvnw compile              # 只编译
 ./mvnw spring-boot:run      # 编译并启动
 ./mvnw package              # 打包成可执行 jar
+./mvnw test                 # 跑集成测试（需数据库在跑）
 
 # 前端：开发 / 构建
 cd dota-guide-frontend
 npm run dev                 # 开发服务器（5173）
 npm run build               # 生产构建（输出到 dist/）
+
+# 数据流水线：生成器测试
+cd sql
+node --test                 # 跑生成器测试
 ```
 
 ## 更多文档
