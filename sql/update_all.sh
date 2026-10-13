@@ -45,14 +45,14 @@ DB_NAME=dota_guide
 # 找不到再退回 PATH 里的 mysql，最后试 26.7 版
 #
 # ⚠️ 字符集：真正挡住乱码的是**每个 .sql 文件开头的 SET NAMES utf8mb4;**，不是这个参数。
-#    实测（两个客户端 × 三种 --default-character-set × 有无 SET NAMES）：
-#      - 文件里有 SET NAMES  → 怎么跑都对
-#      - 文件里没有它、客户端是 26.7 → 中文全变 ä¸»åŠ¨ 这种乱码
-#    也就是说 26.7 客户端**根本不认** --default-character-set 参数
-#    （不是"utf8mb4 参数有 bug"，是参数整个不生效）。
-#    这里仍然传 --default-character-set=utf8mb4：对 5.7 客户端有效，
-#    能兜住「将来某个脚本忘了写 SET NAMES」；用 utf8mb4 而不是 utf8 是因为
-#    utf8 是 3 字节的旧类型，和库的 utf8mb4 不是一回事。
+#    本机服务器 character_set_server=latin1（5.7 默认值），客户端不显式指定会话字符集
+#    就会用错，UTF-8 字节被按 latin1 重新解释 → DEFAULT/COMMENT 里出现 ä¸»åŠ¨ 这类乱码。
+#    实测两个客户端的会话字符集（@character_set_client）：
+#      MySQL Server 5.7/bin/mysql.exe   不带参数 → gbk      带 --default-character-set=utf8mb4 → utf8mb4 ✅
+#      MySQL Server 26.7/bin/mysql.exe  不带参数 → gbk      带 --default-character-set=utf8mb4 → latin1  ❌
+#    26.7 客户端把参数整个忽略了（不报错），静默退回服务器默认值。
+#    所以这里仍然传 --default-character-set=utf8mb4（对 5.7 有效，能兜住将来忘写 SET NAMES 的脚本），
+#    但它是**双保险**不是主力 —— 用 utf8mb4 而不是 utf8 是因为 utf8 是 3 字节的旧类型。
 MYSQL=""
 if [ -f "/c/Program Files/MySQL/MySQL Server 5.7/bin/mysql.exe" ]; then
   MYSQL="/c/Program Files/MySQL/MySQL Server 5.7/bin/mysql.exe"

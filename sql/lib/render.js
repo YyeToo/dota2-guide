@@ -38,11 +38,14 @@ function renderHeroesSql(rows, now) {
 --
 -- ⚠️ 中文乱码坑（结论是实测出来的，别按想当然改）：
 --   本文件开头有一句 SET NAMES utf8mb4; —— **那一句才是真正生效的那道**。
---   实测：只要文件里有它，两个 mysql 客户端配不配 --default-character-set 结果都对；
---   而没有它时，MySQL 26.7 的客户端会按 latin1 处理，中文全变成 ä¸»åŠ¨ 这种乱码。
---   也就是说 26.7 客户端**根本不认** --default-character-set 参数
---   （不是"utf8mb4 参数有 bug"，是参数整个不生效），光靠命令行参数挡不住。
---   命令照抄这个即可，参数留着是给「将来某个脚本忘了写 SET NAMES」兜底：
+--   根因：本机服务器 character_set_server=latin1（5.7 的默认值），客户端不显式指定
+--   会话字符集就会用错，UTF-8 字节被按 latin1 重新解释 → DEFAULT/COMMENT 里出现
+--   ä¸»åŠ¨ 这种乱码（"主动"两字）。行数据不受影响，不看 SHOW CREATE TABLE 很难发现。
+--   实测两个客户端的 @character_set_client：
+--     MySQL Server 5.7  不带参数 → gbk   带 --default-character-set=utf8mb4 → utf8mb4 ✅
+--     MySQL Server 26.7 不带参数 → gbk   带 --default-character-set=utf8mb4 → latin1  ❌
+--   26.7 客户端把参数整个忽略了（不报错），静默退回服务器默认值，所以光靠命令行挡不住。
+--   命令照抄这个即可，参数是给「将来某个脚本忘了写 SET NAMES」兜底的双保险：
 --     mysql -u root -p --default-character-set=utf8mb4 < heroes_full.sql
 --
 -- 本文件会：TRUNCATE hero 表 → 重新插入 127 名英雄（id 1~127 = 官网英文名首字母顺序）
