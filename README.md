@@ -58,8 +58,10 @@ XM-01/
 │   ├── pom.xml                   # Maven 依赖清单（相当于 package.json）
 │   ├── mvnw / mvnw.cmd           # Maven Wrapper：免安装 Maven
 │   ├── src/main/
-│   │   ├── java/com/dota/guide/  # controller / service / mapper / entity / common / config
-│   │   └── resources/            # application.yml（数据库连接等配置）
+│   │   ├── java/com/dota/guide/  # controller / service / mapper / query / entity / common / config
+│   │   └── resources/
+│   │       ├── application.yml   # 数据库连接等配置
+│   │       └── mapper/           # MyBatis 的 XML SQL（HeroMapper.xml）
 │   └── src/test/                 # 后端集成测试（连真实数据库跑完整 HTTP 链路）
 └── dota-guide-frontend/          # 前端：Vue 3 + Vite
     ├── vite.config.js
@@ -146,8 +148,8 @@ npm run dev
 | `pos` | string | 否 | 按号位模糊筛选，如 `pos=3号位` |
 | `attr` | string | 否 | 按主属性**精确**筛选：`力量` / `敏捷` / `智力` / `全才`（官网数据，分布 36/35/34/22） |
 | `complexity` | int | 否 | 按复杂度**精确**筛选：`1` 简单 / `2` 中等 / `3` 困难（分布 55/59/13） |
-| `page` | int | 否 | 页码，默认 1 |
-| `size` | int | 否 | 每页条数，默认 24，上限 100 |
+| `page` | int | 否 | 页码，默认 1（小于 1 按 1 处理） |
+| `size` | int | 否 | 每页条数，默认 24，上限 500（小于 1 按 24 处理） |
 
 示例：`GET /api/heroes?keyword=斧&role=核心&attr=力量&complexity=1&page=1&size=24`
 
@@ -168,7 +170,16 @@ npm run dev
 
 ### 接口二：英雄详情（含技能列表）
 
-`GET /api/heroes/{id}`
+`GET /api/heroes/{key}`
+
+`key` 有两种写法，返回结构完全相同：
+
+| 写法 | 例子 | 说明 |
+|---|---|---|
+| **slug** | `/api/heroes/sven`、`/api/heroes/crystal_maiden` | 英雄的**英文内部名**，全表唯一且稳定。站内链接（首页卡片、新手须知「代表英雄」表格）都用它 —— 数据重灌不会变、URL 还能读懂 |
+| 数字 id | `/api/heroes/3` | 数据库内部编号。第七阶段之前留下的书签仍然有效，新链接不必再用 |
+
+> 💡 后端自己分辨 `key` 是哪种（纯数字试 id，否则当 slug），前端不用判断。
 
 ```json
 {
@@ -190,16 +201,7 @@ npm run dev
 > **`skillKey` 为空 = 魔晶/神杖只强化已有技能（不占新按键）**，D/F 只出现在新增技能上
 > （127 英雄共 69 条：D 键 37 条、F 键 32 条）。
 
-404 示例：`{ "code": 404, "message": "英雄不存在（id=99）", "data": null }`
-
-### 接口三：按 slug 查英雄详情
-
-`GET /api/heroes/slug/{slug}`，如 `/api/heroes/slug/sven`
-
-`slug` 是英雄的**英文内部名**（`sven` / `nevermore` / `crystal_maiden`），全表唯一且稳定，
-不会随数据重灌而变化 —— 站内的教学链接用它而不是 id。返回结构与接口二完全相同。
-
-> 💡 前端按参数是否为纯数字自动选路：数字走 `/{id}`，否则走 `/slug/{slug}`。
+404 示例：`{ "code": 404, "message": "英雄不存在（sven）", "data": null }`
 
 ## 一键更新流水线
 
@@ -253,7 +255,7 @@ bash sql/update_all.sh
 cd sql
 node --test
 
-# 后端集成测试（9 条，需要 MySQL 在跑、dota_guide 库有数据）
+# 后端集成测试（10 条，需要 MySQL 在跑、dota_guide 库有数据）
 cd dota-guide-backend
 ./mvnw test
 ```

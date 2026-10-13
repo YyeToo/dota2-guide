@@ -64,7 +64,7 @@
 
 1. [sql/upgrade_v6_slug.sql](../sql/upgrade_v6_slug.sql) —— hero 表加 `slug` 唯一列，从 avatar URL 文件名自动提取英文内部名（如 `axe`/`sven`/`crystal_maiden`）
 
-> 💡 执行完重启后端，即可使用 `GET /api/heroes/slug/{slug}` 接口。
+> 💡 执行完重启后端，即可在详情接口 `GET /api/heroes/{key}` 里用 slug 查询（如 `/api/heroes/sven`）。
 > （第六阶段是纯前端 UI 改造，没有数据库变更，所以从第五阶段直接跳到第七阶段。）
 
 ---
@@ -128,8 +128,9 @@
 **第七阶段（已完成）：slug 唯一标识**
 
 - ✅ hero 表新增 `slug` 唯一列（upgrade_v6_slug.sql），从 avatar URL 自动提取英文内部名
-- ✅ 新增接口 `GET /api/heroes/slug/{slug}`，站内教学链接改用 slug 而非 id
-- ✅ 前端按参数是否为纯数字自动选路：数字走 `/{id}`，否则走 `/slug/{slug}`
+- ✅ 详情接口支持按 slug 查询，站内教学链接改用 slug 而非 id
+  （当时是单独加了一条 `GET /api/heroes/slug/{slug}`，前端按参数是不是纯数字自动选路；
+  后来合并成一条 `GET /api/heroes/{key}`，见下面的「内部重构」）
 
 ---
 
@@ -159,3 +160,48 @@ SQL 渲染、复核清单全挤在一起，改任何一条规则都要先读完�
 golden 逐字节对比 + 后端连真实数据库的集成测试。它们守的是一类
 编译期发现不了的 bug —— SQL 文件、表结构、代码三者不一致。
 `heroes_full.sql` 曾经缺 `slug` 列就是这类，症状是全新安装时英雄表 0 行。
+
+### 英雄查询链路：SQL 搬进 XML，两个详情接口合一
+
+**改了什么**
+
+- `HeroMapper` 的 SQL 从 `@Select` 注解搬进 [mapper/HeroMapper.xml](../dota-guide-backend/src/main/resources/mapper/HeroMapper.xml)；
+  Java 接口只剩 3 个方法声明
+- 列表和计数共用的 5 个 WHERE 谓词抽成 `<sql id="filters">` 片段
+- `findDetailRows(id)` + `findDetailRowsBySlug(slug)` 合成一个 `findByKey(key, numericKey)`
+- 详情返回类型从 `List<HeroDetailRow>`（扁平行）改成 `HeroDetailVO`，
+  嵌套结构由 `<collection>` 在 MyBatis 内部折叠；`HeroDetailRow`（205 行）和
+  Service 里 40 行的 `assembleDetail` 一起删掉
+- 新的 `HeroQuery` 参数对象收掉 Controller 的 7 个 `@RequestParam`
+  和原来散在 Service 里的 page/size 兜底
+- 接口 `GET /api/heroes/{id}` + `GET /api/heroes/slug/{slug}` 合并成 `GET /api/heroes/{key}`；
+  前端 `api/hero.js` 里那段「按是不是纯数字选请求地址」的正则删掉
+
+**为什么**
+
+改之前，同一件事（"这个英雄是谁"）有两条几乎一样的代码路径，
+差别只有 WHERE 条件一个用 id 一个用 slug；而"列表和总数要用同一套筛选条件"
+这件事靠一句注释「改了一处，记得同步改另一处」来维持。
+
+**要改英雄相关的 SQL 或字段，去 XML 文件**，不用碰 .java。
+
+**踩到的坑（省得下次再踩）**
+
+- **`mybatis.mapper-locations` 必须显式配。** 原版 MyBatis 的 Spring Boot Starter
+  **不会**默认扫描 `resources/mapper/`，不配的话 XML 照样会被打进 jar，
+  但根本不被读取，症状是启动正常、一调用就报
+  `Invalid bound statement (not found): ...HeroMapper.xxx`。
+  （网上"默认就扫 `classpath*:/mapper/**/*.xml`"说的是 MyBatis-**Plus**，本项目是原版。）
+- **带 `<collection>` 的 `resultMap` 不会自动映射外层列。**
+  MyBatis 默认 `autoMappingBehavior=PARTIAL`，含义是"含嵌套映射的 resultMap 不做自动映射"，
+  所以 14 个英雄字段要一个个写 `<result>`，漏写的会**静默变成 null**、不报错。
+- **`size` 上限从 100 提到 500**，修的是一个静默截断：集成测试的 `fetchAllHeroes()`
+  传 `size=500` 想一次拿完 127 个英雄，被 100 的上限砍掉后只拿到前 100 个，
+  有 27 个英雄从来没被"遍历检查字段"的测试覆盖过，而测试全绿。
+  现在 `fetchAllHeroes()` 里加了一条「拿到的条数 == total」断言，
+  同样的问题再出现会直接失败而不是静默少测。
+
+**验证方式**：拿改动前后的两个 jar 各起一个实例，对 14 个请求做响应体逐字节对比 ——
+12 个完全一致（含全部带技能的详情 payload，证明技能顺序和内容没变）。
+两处不同都是有意为之：404 的提示文案（原来会写 `id=` / `slug=`，合并后只能写 key），
+以及上面说的 `size` 上限。
