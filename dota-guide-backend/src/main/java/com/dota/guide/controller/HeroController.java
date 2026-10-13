@@ -4,11 +4,12 @@ import com.dota.guide.common.PageResult;
 import com.dota.guide.common.Result;
 import com.dota.guide.entity.Hero;
 import com.dota.guide.entity.HeroDetailVO;
+import com.dota.guide.query.HeroQuery;
 import com.dota.guide.service.HeroService;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -19,11 +20,23 @@ import org.springframework.web.bind.annotation.RestController;
  *   前端 Axios → Controller → Service → Mapper → MySQL → 原路返回 JSON
  *
  * 常用注解速记：
- *   @RestController : 类上标注，表示所有方法的返回值直接序列化成 JSON 写回响应体
- *   @RequestMapping  : 给本类所有接口统一加路径前缀
- *   @GetMapping      : 处理 GET 请求（查询）
- *   @PathVariable    : 取出 URL 路径中的参数，如 /api/heroes/3 中的 3
- *   @RequestParam    : 取出 URL 问号后面的参数，如 /api/heroes?page=2 中的 page
+ *   @RestController  : 类上标注，表示所有方法的返回值直接序列化成 JSON 写回响应体
+ *   @RequestMapping   : 给本类所有接口统一加路径前缀
+ *   @GetMapping       : 处理 GET 请求（查询）
+ *   @PathVariable     : 取出 URL 路径中的参数，如 /api/heroes/3 中的 3
+ *   @ModelAttribute   : 把 URL 问号后面的参数按名字装进一个对象（见接口一）
+ *
+ * ============================================================
+ * 本类现在只有 2 个接口（原来 3 个）
+ * ============================================================
+ * 原来详情有两条路：
+ *   GET /api/heroes/{id}        按数字 id 查
+ *   GET /api/heroes/slug/{slug}  按 slug 查
+ * 两边的 Service 方法、Mapper 方法、SQL 全都是成对的，差别只有 WHERE 条件一个用 id 一个用 slug。
+ *
+ * 现在合成一条：GET /api/heroes/{key}，key 是数字就当 id、不是数字就当 slug。
+ * 判断只在这一处做，前端不用再"看参数是不是纯数字来决定请求哪个地址"。
+ * 老链接 /api/heroes/3 照常能用（3 是数字，走 id 分支）。
  */
 @RestController
 @RequestMapping("/api/heroes") // 本类所有接口都以 /api/heroes 开头
@@ -41,61 +54,42 @@ public class HeroController {
      * GET http://localhost:8080/api/heroes
      * GET http://localhost:8080/api/heroes?page=2&size=24&keyword=斧&role=核心&pos=3号位&attr=力量&complexity=1
      *
-     * @RequestParam 的两个常用属性：
-     *   required = false   —— 参数可以省略（不传就是 null，筛选条件就不生效）
-     *   defaultValue = "1" —— 参数省略时使用默认值
+     * @ModelAttribute 做了什么：Spring 会把问号后面的参数按**名字**塞进 HeroQuery 的同名字段 ——
+     *   ?keyword=斧       → query.setKeyword("斧")
+     *   ?complexity=1     → query.setComplexity(1)
+     *   ?page=2&size=24   → query.setPage(2)、query.setSize(24)
+     * 没传的参数不去动它，字段的初始值（page=1、size=24）就生效，等于原来的 defaultValue。
      *
-     * 筛选参数说明（第四阶段新增 attr/complexity）：
-     *   attr        主属性筛选（力量/敏捷/智力），官网同款分组
-     *   complexity  复杂度筛选（1 简单/2 中等/3 困难），官网"新手可玩"即 complexity=1
+     * 换来的好处有两点：
+     *   1. 方法签名从 7 个参数变成 1 个，再加筛选条件不用改这里；
+     *   2. 参数校验（page/size 兜底）跟着 HeroQuery 走，
+     *      不会出现"Controller 校验了、别处调用 Service 时又忘了校验"。
      *
      * 返回结构：data 里是 { total: 总条数, list: [当前页英雄...] }
      * 前端用 total 算总页数，实现分页条。
      */
     @GetMapping
-    public Result<PageResult<Hero>> list(
-            @RequestParam(value = "keyword", required = false) String keyword,
-            @RequestParam(value = "role", required = false) String role,
-            @RequestParam(value = "pos", required = false) String pos,
-            @RequestParam(value = "attr", required = false) String attr,
-            @RequestParam(value = "complexity", required = false) Integer complexity,
-            @RequestParam(value = "page", defaultValue = "1") int page,
-            @RequestParam(value = "size", defaultValue = "24") int size) {
-        return Result.success(heroService.getHeroPage(keyword, role, pos, attr, complexity, page, size));
+    public Result<PageResult<Hero>> list(@ModelAttribute HeroQuery query) {
+        return Result.success(heroService.getHeroPage(query));
     }
 
     /**
      * 接口二：英雄详情（含技能列表）
-     * GET http://localhost:8080/api/heroes/{id}   例如 /api/heroes/1
+     * GET http://localhost:8080/api/heroes/3              按数字 id（老书签、首页卡片）
+     * GET http://localhost:8080/api/heroes/sven           按 slug（站内教学链接用它）
+     * GET http://localhost:8080/api/heroes/crystal_maiden
      *
-     * @param id URL 路径上的英雄 id，@PathVariable 会自动取出来并转换成 Long 类型
+     * 两种写法返回结构完全相同，前端用哪种都行。
+     *
+     * @param key URL 路径上的英雄标识，@PathVariable 自动取出来（类型声明成 String，
+     *            因为 slug 是字符串；是数字时由 Service 转成 id 去查）
      */
-    @GetMapping("/{id}")
-    public Result<HeroDetailVO> detail(@PathVariable Long id) {
-        HeroDetailVO vo = heroService.getHeroDetail(id);
+    @GetMapping("/{key}")
+    public Result<HeroDetailVO> detail(@PathVariable String key) {
+        HeroDetailVO vo = heroService.getHeroDetail(key);
         // 查不到时返回 404 错误信息，前端会提示"英雄不存在"
         if (vo == null) {
-            return Result.error(404, "英雄不存在（id=" + id + "）");
-        }
-        return Result.success(vo);
-    }
-
-    /**
-     * 接口三：英雄详情（按 slug 查询，第六阶段新增）
-     * GET http://localhost:8080/api/heroes/slug/sven   例如 /api/heroes/slug/crystal_maiden
-     *
-     * slug 是什么：hero 表的唯一标识列，英雄英文内部名（来自官网头像文件名）。
-     * 教学页的"代表英雄"链接用它（/heroes/sven），数字 id 是数据库内部实现，
-     * 写死在页面里数据一重灌就对不上；slug 永久稳定、还可读。
-     *
-     * 路径冲突说明：/slug/{slug} 是两段路径，/{id} 是一段路径，
-     * 两个接口不会互相抢（Spring 按路径段数区分）。
-     */
-    @GetMapping("/slug/{slug}")
-    public Result<HeroDetailVO> detailBySlug(@PathVariable String slug) {
-        HeroDetailVO vo = heroService.getHeroDetailBySlug(slug);
-        if (vo == null) {
-            return Result.error(404, "英雄不存在（slug=" + slug + "）");
+            return Result.error(404, "英雄不存在（" + key + "）");
         }
         return Result.success(vo);
     }
