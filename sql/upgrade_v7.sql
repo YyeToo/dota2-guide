@@ -36,7 +36,9 @@
 -- ============================================================
 
 -- 设置连接字符集：本文件里有中文的 DEFAULT 和 COMMENT，靠这一句保证不乱码。
--- 实测 MySQL 26.7 的客户端不认 --default-character-set 参数，文件里写了才生效。
+-- 本机服务器 character_set_server=latin1，而 --default-character-set 参数并不总是生效
+-- （实测 MySQL 26.7 的客户端会整个忽略它，静默退回 latin1）。写在文件里才靠得住。
+-- 顺带一提：本脚本末尾的 MODIFY COLUMN 正是在重写旧脚本留下的乱码 COMMENT。
 SET NAMES utf8mb4;
 
 USE dota_guide;

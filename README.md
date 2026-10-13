@@ -21,7 +21,7 @@
 | 后端 | Java | 17 | 已在本机验证 17.0.19 |
 | 后端 | Spring Boot | 3.5.16 | Boot 3 系列最终稳定版 |
 | 后端 | MyBatis | 3.0.5 | 官方适配 Boot 3.5 的版本 |
-| 数据库 | MySQL | 8.x | 需本地已安装并启动 |
+| 数据库 | MySQL | **5.7**（实测 5.7.23） | 本项目不用窗口函数等 8.0 特性，5.7 及以上都能跑 |
 | 前端 | Vue | 3.5.x | 组合式 API（`<script setup>`） |
 | 前端 | Vite | 6.4.4 | 锁定 6.x：Vite 7/8 要求 Node ≥ 22.12 |
 | 前端 | Vue Router | 4.6.x | 页面路由 |
@@ -81,7 +81,7 @@ XM-01/
 |---|---|---|
 | JDK | 17 或更高 | `java -version` |
 | Maven | **不需要安装**（项目自带 mvnw） | — |
-| MySQL | 8.x，已启动服务 | 能连上 `localhost:3306` |
+| MySQL | 5.7 或更高，已启动服务（本机实测 5.7.23） | 能连上 `localhost:3306` |
 | Node.js | 18+（22.11 已验证） | `node --version` |
 
 ## 快速开始
@@ -243,7 +243,7 @@ bash sql/update_all.sh
 |---|---|---|
 | `Communications link failure` / `Connection refused` | MySQL 没启动，或密码错误 | 启动 MySQL 服务；核对 application.yml 的账号密码 |
 | 接口请求约 30 秒才返回，且 code 为 500 | 数据库连不上，连接池 30 秒超时 | 同上：核对账号密码、确认 MySQL 已启动 |
-| `Public Key Retrieval is not allowed` | MySQL 8 认证方式限制 | 本项目 URL 已内置 `allowPublicKeyRetrieval=true` |
+| `Public Key Retrieval is not allowed` | MySQL 8 的 `caching_sha2_password` 认证方式限制（5.7 用 `mysql_native_password`，不会遇到） | 本项目 URL 已内置 `allowPublicKeyRetrieval=true` |
 | `Unknown database 'dota_guide'` | 没执行初始化脚本 | 先执行 sql/init.sql |
 | 浏览器 Console 报 CORS | 跨域被拦 | ① 确认后端已启动（8080）；② 确认 CorsConfig 存在；③ 或改用 vite.config.js 里的代理方案 |
 | 前端显示"加载失败/网络错误" | 后端没启动或端口不对 | 先单独打开 `http://localhost:8080/api/heroes` 验证后端 |
