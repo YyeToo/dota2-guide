@@ -1,0 +1,10 @@
+# 依赖目录：npm install 生成，体积巨大，不要提交
+node_modules/
+# 构建产物：npm run build 生成
+dist/
+# 编辑器/系统杂项
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.local

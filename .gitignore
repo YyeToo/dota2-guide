@@ -1,0 +1,42 @@
+# ============ 依赖与构建产物 ============
+# 前端 npm 依赖（83M，npm install 可还原）
+node_modules/
+# 前端打包输出（vite build 产物）
+dist/
+# 后端 Maven 编译输出
+target/
+
+# ============ 可再生的下载缓存 ============
+# 从 dota2.com 下载的原始英雄 JSON，由 sql/download_official.js 重新生成
+# 若希望离线可复现（不依赖网络重下），删掉下面两行即可把它纳入版本管理
+sql/_official_raw/
+sql/download.log
+
+# ============ 日志与临时文件 ============
+*.log
+*.tmp
+
+# ============ Java ============
+*.class
+*.jar
+!mvnw/**/*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# ============ IDE ============
+.vscode/
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# ============ 操作系统 ============
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ============ 敏感信息 ============
+# 本地数据库密码等不要提交（application-local.yml 之类）
+**/application-local.yml
+**/application-local.properties
+.env
+.env.local

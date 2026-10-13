@@ -1,0 +1,443 @@
+/* ============================================================
+   全局样式：对所有组件生效（在 main.js 中引入）
+   主题：深色毛玻璃 + Dota 红金
+   2026-10-07 视觉改版（对齐参考站 mousefinder.top 的设计语言）：
+     1. 卡片换成毛玻璃配方：半透明深色渐变 + 顶部 1px 内高光
+        + 悬停时一条斜向光带扫过
+     2. 背景加三团固定的彩色模糊光斑（红/金/紫）——
+        毛玻璃的 backdrop-filter 需要有东西可"糊"，糊纯色是看不出效果的
+     3. 圆角放大到 16px，字体换系统字体栈，动效走统一缓动曲线
+     4. 动效克制（用户要求）：只保留悬停上浮、光带扫过、颜色过渡，
+        不做页面/卡片的入场动画
+
+   【和参考站深色模式的两点不同（刻意为之）】
+   把参考站深色模式跑起来读了它的真实变量，发现两件事：
+     a) --glass-bg: #202328 —— 它的"玻璃"在深色下其实是【不透明纯色】
+     b) --glass-sheen: transparent —— 悬停光带在深色下被【关掉了】
+   本站两者都保留：卡片用真正的半透明 + backdrop-filter，
+   光带也保留（只是把白色透明度从浅色的 0.72 降到 0.10，
+   深色底上白光很扎眼，必须压淡）。
+   ============================================================ */
+
+/* ---------- 全站 CSS 变量 ----------
+   变量名全部保持不变（组件里引用的还是 var(--gold)、var(--card) 这些），
+   所以四个页面几乎不用改，改这一个文件就全站生效。
+
+   【深色主题的对比度】
+   深色底上是"越亮越清楚"。下面注释里 ✓ 后面的数字是实测对比度
+   （对页面底色 #17191d，WCAG 标准：正文需 ≥4.5:1）。
+   色值沿用此前用户指定的 Dota 色板，只修正了两个不合格/偏弱的：
+     --muted-2  原 #6e7681 → 3.83 ✗  → #878e9e  5.36 ✓
+     --red      原 #c8352b → 3.35 ✗  → #e35548  4.74 ✓（Dota 红提亮版）
+   其余原值实测全部合格（金 9.3 / 敏捷绿 7.9 / 全才紫 6.4 / 智力蓝 6.0 / 力量红 4.9）。 */
+:root {
+  /* 基础色板 */
+  --bg: #17191d;         /* 页面底色（参考站同款深灰蓝黑；不用纯黑，纯黑观感太"硬"） */
+  --text: #e6e8ee;       /* 正文/标题（14.4:1 ✓） */
+  --muted: #9aa3b5;      /* 弱化文字（6.9:1 ✓） */
+  --muted-2: #878e9e;    /* 更弱一档（meta 行、小灰字；5.4:1 ✓） */
+  --border: rgba(255, 255, 255, 0.10);   /* 边框/分隔线 */
+
+  /* 卡片相关的三种"面"。
+     ⚠️ --card 必须是【纯色】不能是渐变：它被用在别的地方拼多背景
+     （如 .banner 的 radial-gradient(...), var(--card)），
+     渐变塞不进去。玻璃质感那条渐变单独放 --glass-bg。 */
+  --card: rgba(32, 35, 40, 0.72);      /* 卡片底色（半透明深色，让背景光斑透出来） */
+  --card-2: rgba(255, 255, 255, 0.045);/* 次级面：表头/嵌套小卡/按钮/输入框（提亮一档） */
+  --card-3: rgba(255, 255, 255, 0.085);/* hover 面/更高一档的底（按键徽章、进度条轨道） */
+  --surface: #202328;                  /* 不透明面板色：原生下拉选项、时间轴圆标挡线用 */
+
+  /* 强调色（✓ 后是实测对比度） */
+  --gold: #f0b232;         /* 金色：强调/激活/悬停（9.3 ✓）—— Dota 金 */
+  --gold-bright: #ffc85c;  /* 金色 hover：深色底上 hover 要【提亮】（10.6 ✓） */
+  --red: #e35548;          /* 品牌红（Dota 红提亮版，4.7 ✓） */
+  --danger: #f0564d;       /* 错误红（5.2 ✓） */
+
+  /* 主属性色（用户指定：力量/敏捷/智力/全才） */
+  --str: #e5574a;          /* 力量红（4.9 ✓） */
+  --agi: #46c46a;          /* 敏捷绿（7.9 ✓） */
+  --int: #4a9be8;          /* 智力蓝（6.0 ✓） */
+  --all: #a98bf0;          /* 全才紫（6.4 ✓） */
+  --link: var(--int);      /* 链接蓝复用智力蓝（色板外不新增颜色） */
+
+  /* 技能徽章专用色（详情页） */
+  --innate: #56d4dd;       /* 先天技能徽章（青，9.9 ✓） */
+
+  /* 半透明色：同色板色 + 透明度，做淡色底/浅描边用。
+     深色底上透明度要比浅色版【高】一点，否则淡色底会淡到看不见 */
+  --gold-tint: rgba(240, 178, 50, 0.12);
+  --gold-tint-2: rgba(240, 178, 50, 0.20);
+  --str-tint: rgba(229, 87, 74, 0.14);
+  --agi-tint: rgba(70, 196, 106, 0.14);
+  --int-tint: rgba(74, 155, 232, 0.14);
+  --all-tint: rgba(169, 139, 240, 0.14);
+  /* 属性色发光：卡片竖条/头像悬停光晕、详情页横幅用 */
+  --str-glow: rgba(229, 87, 74, 0.45);
+  --agi-glow: rgba(70, 196, 106, 0.45);
+  --int-glow: rgba(74, 155, 232, 0.45);
+  --all-glow: rgba(169, 139, 240, 0.45);
+  --muted-tint: rgba(255, 255, 255, 0.06);
+  --innate-tint: rgba(86, 212, 221, 0.12);
+  --danger-tint: rgba(240, 86, 77, 0.12);
+  --red-tint: rgba(227, 85, 72, 0.14);
+  --zebra: rgba(255, 255, 255, 0.025);   /* 表格斑马纹（深色底上一抹极淡的白） */
+
+  /* ---------- 毛玻璃配方 ---------- */
+  /* 卡片背景：一条 160° 的半透明深色渐变。
+     三个色标透明度不一样（78% → 52% → 68%），是刻意的：
+     左上角最实、中间最透、右下回一点，模拟"一块有厚度的玻璃"的受光差异。
+     整体比 --bg(#17191d) 亮，玻璃才有"浮起来"的感觉 */
+  --glass-bg: linear-gradient(
+    160deg,
+    rgba(48, 53, 62, 0.78),
+    rgba(30, 33, 38, 0.52) 40%,
+    rgba(42, 46, 54, 0.68)
+  );
+  /* 顶部 1px 内高光：深色底上这条"亮边"是玻璃感最关键的一笔
+     （浅色底靠阴影，深色底靠高光），8% 的白刚好，再亮就成描边了 */
+  --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  /* 常态投影：深色底上阴影要重一些才看得出层次（黑 45%） */
+  --glass-shadow: 0 18px 44px rgba(0, 0, 0, 0.45), var(--glass-hi);
+  /* 悬停投影：浮得更高 + --shadow-gold 的红金光晕 */
+  --glass-shadow-hover: 0 28px 60px rgba(0, 0, 0, 0.60), var(--glass-hi);
+  /* 悬停时那条斜向扫过的光带（.card::after 用）。
+     ⚠️ 深色底上白光非常扎眼，10% 是"看得见但不刺眼"的上限；
+     参考站干脆把深色模式的光带设成 transparent 关掉了，这里选择保留 */
+  --glass-sheen: rgba(255, 255, 255, 0.10);
+
+  /* ---------- 动效规范（参考站同款） ---------- */
+  --dur-micro: 0.2s;    /* 颜色/边框这类微反馈 */
+  --dur-std: 0.32s;     /* 位移/阴影这类标准动画 */
+  --dur-sheen: 0.7s;    /* 光带扫过（要慢，扫太快看不见） */
+  --ease-out: cubic-bezier(0.05, 0.7, 0.1, 1);   /* 出场：快起慢收 */
+  --ease-std: cubic-bezier(0.2, 0, 0, 1);        /* 标准缓动 */
+
+  /* 圆角 / 阴影（统一规范） */
+  --radius: 16px;        /* 卡片主圆角 */
+  --radius-sm: 12px;     /* 小卡/内部元素圆角 */
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.45);      /* 卡片大投影 */
+  --shadow-gold: 0 0 0 1px rgba(240, 178, 50, 0.22), 0 0 24px rgba(240, 178, 50, 0.20);
+
+  /* 滚动条 */
+  --scroll-thumb: rgba(255, 255, 255, 0.16);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.30);
+
+  /* 间距（8px 倍数基准；存量样式里的微间距如 5/6px 图标间隙保持原值） */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* 顶栏高度：各页面吸顶元素（图鉴筛选栏、详情页侧栏）的 sticky top
+     都要让开顶栏。估算值（单行 66px / ≤900px 换两行 102px），留 2px 余量，
+     实际差 1~2px 时顶栏的渐变线会盖在吸顶元素上，看不出缝隙 */
+  --header-h: 68px;
+
+  /* 告诉浏览器"本站是深色主题"：
+     影响原生控件（下拉框、滚动条、日期选择器）的配色。
+     不写这行，下拉框弹出的选项列表会是白色的，和页面割裂 */
+  color-scheme: dark;
+}
+
+/* ≤900px 顶栏换两行（logo 行 + 导航行），高度变大，同步更新让位高度 */
+@media (max-width: 900px) {
+  :root {
+    --header-h: 104px;
+  }
+}
+
+/* 基础重置 + 全局细滚动条
+   Firefox 走 scrollbar-width/scrollbar-color，
+   Chrome/Edge 走 ::-webkit-scrollbar；写在 * 上对所有滚动容器生效 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box; /* 宽高包含 padding 和 border，布局计算更直观 */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;   /* 横向滚动条同样 8px（顶栏导航横向滚动用） */
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  /* 系统字体栈（参考站同款）：优先用各平台的原生 UI 字体，
+     Mac 上是苹方、Windows 上是微软雅黑。原生字体渲染更"贴系统"，
+     比引外部字体更像 Apple 风格；-apple-system / BlinkMacSystemFont 是
+     给 Safari / Chrome 的两个历史别名，两个都要写 */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', '微软雅黑', Roboto, 'Helvetica Neue',
+    Arial, sans-serif;
+  line-height: 1.6;
+  /* 字体抗锯齿：开这个，深色底上的字不会显得虚胖 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ---------- 背景光斑 ----------
+   三团固定的彩色模糊光斑：左上红、右上金、底部紫（Dota 红金 + 一点紫）。
+   为什么必须加它？—— 毛玻璃的 backdrop-filter 是"把背后的东西糊掉"，
+   背后如果是一块纯色，糊完还是纯色，等于白做。有了光斑，
+   卡片背后的颜色有变化，透出来的玻璃才有"厚薄不一"的通透感。
+   position: fixed 让光斑钉在视口上不随页面滚动 —— 卡片滚动时背后的
+   色彩一直在变，玻璃感更明显（这也是参考站的做法）。
+   z-index: -1 把它压到所有内容下面（body 的底色会被浏览器提升为
+   画布背景，所以 -1 层的伪元素是画在底色之上的，不会看不见）；
+   pointer-events: none 保证它不吃鼠标事件。
+   透明度比浅色版高：深色底上光斑太淡就完全看不见了 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 520px at 12% -6%, rgba(200, 53, 43, 0.28), transparent 62%),
+    radial-gradient(820px 480px at 88% 2%, rgba(240, 178, 50, 0.16), transparent 64%),
+    radial-gradient(760px 520px at 50% 104%, rgba(169, 139, 240, 0.16), transparent 66%);
+}
+
+/* 选中文字高亮：金色底 + 深色文字（用户要求） */
+::selection {
+  background: var(--gold);
+  color: var(--bg);
+}
+
+/* 全局按钮样式（页面里 <button> 直接继承） */
+button {
+  padding: 8px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;       /* 鼠标悬停变小手 */
+  transition: border-color var(--dur-micro), background var(--dur-micro), color var(--dur-micro);
+}
+
+button:hover {
+  background: var(--card-3);
+  border-color: var(--gold); /* 悬停时金边高亮 */
+}
+
+/* 全局表单控件样式（搜索框、下拉框继承，深色主题） */
+input,
+select {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;   /* 表单控件默认不继承字体，必须显式写 */
+  transition: border-color var(--dur-micro), background var(--dur-micro);
+}
+
+/* 悬停：边框亮一档（用户要求所有可交互元素都有 hover 反馈） */
+input:hover,
+select:hover {
+  border-color: var(--card-3);
+}
+
+/* 聚焦：深色底上把底色提亮一档 + 金边，比只改边框更醒目 */
+input:focus,
+select:focus {
+  background: var(--surface);
+  border-color: var(--gold);
+}
+
+/* ---------- 键盘焦点外框 ----------
+   需求（用户）：键盘（Tab 键）聚焦要显示清晰的外框；鼠标点击聚焦不要显示。
+   实现原理：:focus-visible 只在"键盘导航"时匹配（浏览器自动判断），
+   鼠标点击聚焦只匹配 :focus、不匹配 :focus-visible，所以：
+     1. :focus:not(:focus-visible) 取消点击后的默认外框（白色/蓝色那个）
+     2. :focus-visible 统一画金色外框（按钮/链接/输入框都生效） */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* 下拉框的选项列表：原生弹出层必须用不透明底色（深色主题）。
+   --surface 就是为此准备的不透明深色，浮层不能半透明 */
+select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* ============================================================
+   统一卡片样式 .card（毛玻璃）
+   —— 全站卡片一套配方，各组件把 card 类加在卡片根元素上即可
+      （面板/英雄卡/推荐卡/要点卡等）
+
+   配方四件套：
+     1. 半透明深色渐变底 var(--glass-bg)  → 玻璃的"料"
+     2. backdrop-filter 把背后糊掉        → 玻璃的"透"
+     3. box-shadow 里的 inset 顶部高光    → 玻璃的"边"
+     4. ::after 斜向光带，悬停时扫过       → 玻璃的"反光"
+
+   ⚠️ 光带为什么用 background-position 动画、而不是参考站的
+      transform + 父级 overflow: hidden？
+      因为 overflow: hidden 会连带裁掉卡片里【故意画到卡片外面】的元素——
+      进阶页时间轴的序号圆标就是定位在卡片外（left: -36px）的，
+      一旦裁掉整条时间轴就废了；滑动页签面板还要靠 overflow-y: auto 内部滚动，
+      也会被 overflow: hidden 干扰。
+      改成让光带伪元素【正好铺满卡片】(inset: 0) + border-radius: inherit，
+      再把渐变做成 250% 宽、靠移动 background-position 扫过，
+      就完全不需要父级裁切了 —— 效果一样，且不碰任何布局。
+   ============================================================ */
+.card {
+  position: relative;              /* 光带 ::after 的定位参照 */
+  background: var(--glass-bg);     /* 半透明深色渐变：玻璃的料 */
+  backdrop-filter: blur(20px) saturate(1.6);          /* 玻璃的透 */
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);  /* Safari 前缀 */
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--glass-shadow);
+  /* 过渡：位移和阴影走"标准时长"，边框颜色走"微反馈时长"（参考站也是分开的） */
+  transition: transform var(--dur-std) var(--ease-out),
+              box-shadow var(--dur-std) var(--ease-out),
+              border-color var(--dur-micro) ease;
+}
+
+/* 悬停：上浮 4px + 金边 + 更深的投影 + 金色光晕 */
+.card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(240, 178, 50, 0.42);
+  box-shadow: var(--glass-shadow-hover), var(--shadow-gold);
+}
+
+/* 斜向光带：一条 100° 的柔光，常态停在卡片右侧外，悬停时扫到左侧外。
+   用渐变代替实体色块，两端是透明的，看起来才像"反光"而不是"一块白布" */
+.card::after {
+  content: '';
+  position: absolute;
+  inset: 0;                        /* 正好铺满卡片，不需要父级 overflow: hidden */
+  border-radius: inherit;          /* 圆角跟卡片一致，不然光带会溢出圆角 */
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    var(--glass-sheen) 50%,
+    transparent 70%
+  );
+  background-size: 250% 100%;      /* 渐变拉宽到 2.5 倍卡片宽，才有"扫"的空间 */
+  background-position: 200% 0;     /* 常态：停在右侧外（看不见） */
+  opacity: 0;
+  pointer-events: none;            /* 不挡卡片的点击 */
+  z-index: 2;                      /* 盖在卡片内容之上 */
+  transition: background-position var(--dur-sheen) var(--ease-std),
+              opacity var(--dur-micro) linear;
+}
+
+/* 悬停：光带从右扫到左，同时淡入 */
+.card:hover::after {
+  opacity: 1;
+  background-position: -100% 0;
+}
+
+/* 嵌套小卡变体（面板内部的小卡）：
+   在深色玻璃面板上"提亮一档"，比面板本身浅一点，层次就出来了；
+   不带投影（它在面板里，不该再浮起来） */
+.card.card-sm {
+  background: var(--card-2);
+  border-radius: var(--radius-sm);
+  backdrop-filter: none;           /* 从面板里再糊一层没意义，还费性能 */
+  box-shadow: none;
+}
+
+/* ---------- 主属性色工具类 ----------
+   给卡片/横幅加 stripe-属性 类（如 class="stripe-力量"），
+   类里把主属性色写进三个变量，元素自己用变量画装饰：
+     --stripe      ：3px 属性竖条
+     --stripe-tint ：淡色底
+     --stripe-glow ：悬停光晕/外发光
+   图鉴卡片、详情页横幅共用，所以放全局，各页面不重复定义 */
+.stripe-力量 { --stripe: var(--str); --stripe-tint: var(--str-tint); --stripe-glow: var(--str-glow); }
+.stripe-敏捷 { --stripe: var(--agi); --stripe-tint: var(--agi-tint); --stripe-glow: var(--agi-glow); }
+.stripe-智力 { --stripe: var(--int); --stripe-tint: var(--int-tint); --stripe-glow: var(--int-glow); }
+.stripe-全才 { --stripe: var(--all); --stripe-tint: var(--all-tint); --stripe-glow: var(--all-glow); }
+
+/* ---------- 页面大标题渐变文字 ----------
+   原理：文字设成透明，把渐变色画在背景上、再用 background-clip: text
+   把背景裁剪成文字形状——渐变就"透"在字形里了。
+   深色底上"白 → 金"起笔是白，最亮眼；浅色主题下要反过来才能看清 */
+.gradient-title {
+  background: linear-gradient(180deg, #ffffff 20%, var(--gold) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ============================================================
+   骨架屏（Skeleton）：加载时显示的灰色占位块
+   原理：一个渐变色背景（暗→亮→暗），通过移动背景位置
+   制造"光扫过"的闪烁动画，让用户感觉页面正在加载。
+   用法：任何元素加 .skeleton 类即可，宽高由组件里的样式控制。
+   （不跟卡片变量走：骨架屏需要的是"中性灰"，不是卡片色） */
+.skeleton {
+  border-radius: var(--radius-sm);
+  /* 渐变宽度 200%，动画时移动背景位置，形成流光效果 */
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.05) 25%,
+    rgba(255, 255, 255, 0.10) 50%,
+    rgba(255, 255, 255, 0.05) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;  /* 光从右侧开始 */
+  }
+  to {
+    background-position: -200% 0; /* 扫到左侧，如此循环 */
+  }
+}
+
+/* ---------- 无障碍：尊重"减少动态效果"系统设置 ----------
+   用户在系统里开了"减少动态效果"（前庭功能障碍 / 晕动症人群会开），
+   就把悬停上浮和光带扫过关掉，只保留颜色变化。
+   这是做动效时的基本礼貌，成本很低 */
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card::after {
+    transition-duration: 0.01ms;
+  }
+
+  .card:hover {
+    transform: none;
+  }
+
+  .card:hover::after {
+    opacity: 0;   /* 光带不扫了 */
+  }
+
+  .skeleton {
+    animation: none;   /* 骨架屏停止闪烁 */
+  }
+}

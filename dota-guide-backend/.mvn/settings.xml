@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  项目级 Maven 设置文件（由 .mvn/maven.config 中的 -s 参数指定加载）
+
+  作用：把依赖下载源从 Maven 中央仓库切换到阿里云镜像。
+  背景：Maven 默认从 repo.maven.apache.org 下载依赖，国内网络访问经常超时导致构建失败；
+        阿里云镜像与中央仓库内容同步，速度快得多。
+
+  说明：如果你已经配置过全局设置文件（C:\Users\你的用户名\.m2\settings.xml），
+        也可以把下面的 <mirror> 段复制进去，然后删除本文件旁边的 maven.config。
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+    <mirrors>
+        <mirror>
+            <!-- 镜像 id，全局唯一即可 -->
+            <id>aliyun-central</id>
+            <!-- * 表示所有仓库的下载请求都转发到阿里云 -->
+            <mirrorOf>*</mirrorOf>
+            <name>阿里云公共仓库镜像</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+        </mirror>
+    </mirrors>
+</settings>
